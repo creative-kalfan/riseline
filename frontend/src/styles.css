@@ -1,0 +1,291 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+@import "@fontsource-variable/schibsted-grotesk";
+
+/* Dark variant responds to the persisted data-theme (set pre-hydration in
+   __root.tsx) and to the legacy .dark class during the D1–D4 migration. */
+@custom-variant dark (&:is(.dark *, [data-theme="dark"] *));
+
+@theme inline {
+  --font-sans: "Schibsted Grotesk Variable", system-ui, -apple-system, "Segoe UI",
+    "Noto Sans Devanagari", "Noto Sans Telugu", sans-serif;
+  /* Single typeface: former Fira Code usages render in the same grotesk. */
+  --font-mono: "Schibsted Grotesk Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* Shape: chip 4 / control 6 / panel 10 / table rows 0. */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-chip: 4px;
+  --radius-control: 6px;
+  --radius-panel: 10px;
+
+  /* Semantic colors (values live on [data-theme] below). */
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-on-brand: var(--on-brand);
+  --color-evidence: var(--evidence);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-brand-subtle: var(--brand-subtle);
+  --color-success-subtle: var(--success-subtle);
+  --color-warning-subtle: var(--warning-subtle);
+  --color-danger-subtle: var(--danger-subtle);
+  --color-focus: var(--focus);
+
+  /* Legacy aliases so D2/D3 screens keep resolving during migration. */
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--text);
+  --color-popover: var(--surface);
+  --color-popover-foreground: var(--text);
+  --color-primary: var(--brand);
+  --color-primary-foreground: var(--on-brand);
+  --color-secondary: var(--surface-muted);
+  --color-secondary-foreground: var(--text);
+  --color-muted: var(--surface-muted);
+  --color-muted-foreground: var(--text-muted);
+  --color-accent: var(--surface-muted);
+  --color-accent-foreground: var(--text);
+  --color-destructive: var(--danger);
+  --color-destructive-foreground: var(--on-brand);
+  --color-success-foreground: var(--on-brand);
+  --color-warning-foreground: var(--on-brand);
+  --color-info: var(--brand);
+  --color-info-foreground: var(--on-brand);
+  --color-input: var(--border-strong);
+  --color-ring: var(--focus);
+  --color-surface-elevated: var(--surface-muted);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-copper: var(--copper);
+
+  /* Sole elevation: floating layers only (menu/popover/dialog/palette). */
+  --shadow-float: var(--shadow-float-value);
+}
+
+/* Light theme (also the no-JS/SSR default). */
+:root,
+[data-theme="light"] {
+  --radius: 6px;
+
+  --bg: #f4f6f7;
+  --surface: #ffffff;
+  --surface-muted: #e9edef;
+  --text: #14202b;
+  --text-muted: #4a5866;
+  --border: #d9dfe4;
+  --border-strong: #64748b;
+  --brand: #0b5563;
+  --brand-hover: #08434f;
+  --on-brand: #ffffff;
+  --evidence: #f6dd6b;
+  --success: #177a45;
+  --warning: #8a5b00;
+  --danger: #b3382c;
+  --brand-subtle: #ddeef2;
+  --success-subtle: #e8f4ed;
+  --warning-subtle: #f6ecd2;
+  --danger-subtle: #f8e2de;
+  --focus: #0b5563;
+
+  --shadow-float-value: 0 8px 24px rgb(0 0 0 / 0.12);
+
+  --sidebar: #edf0f3;
+  --sidebar-foreground: #4a5866;
+  --sidebar-primary: #0b5563;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #e9edef;
+  --sidebar-accent-foreground: #14202b;
+  --sidebar-border: #d9dfe4;
+  --sidebar-ring: #0b5563;
+
+  --copper: #b9542f;
+
+  --chart-1: #0b5563;
+  --chart-2: #177a45;
+  --chart-3: #8a5b00;
+  --chart-4: #b3382c;
+  --chart-5: #4f46e5;
+}
+
+/* Dark theme. */
+[data-theme="dark"] {
+  --radius: 6px;
+
+  --bg: #0f1a22;
+  --surface: #16232d;
+  --surface-muted: #1d2c38;
+  --text: #e6ecf0;
+  --text-muted: #9aa8b4;
+  --border: #2a3542;
+  --border-strong: #7e8fa0;
+  --brand: #5fb5c4;
+  --brand-hover: #7cc6d3;
+  --on-brand: #0a1e24;
+  --evidence: #7a6c2f;
+  --success: #4cc38a;
+  --warning: #e0a93b;
+  --danger: #f07a6c;
+  --brand-subtle: #14333b;
+  --success-subtle: #12372a;
+  --warning-subtle: #3a2e14;
+  --danger-subtle: #3d1f1c;
+  --focus: #8ad0dc;
+
+  --shadow-float-value: 0 8px 28px rgb(0 0 0 / 0.45);
+
+  --sidebar: #0c141b;
+  --sidebar-foreground: #9aa8b4;
+  --sidebar-primary: #5fb5c4;
+  --sidebar-primary-foreground: #0a1e24;
+  --sidebar-accent: #1d2c38;
+  --sidebar-accent-foreground: #e6ecf0;
+  --sidebar-border: #2a3542;
+  --sidebar-ring: #8ad0dc;
+
+  --copper: #d56b3f;
+
+  --chart-1: #5fb5c4;
+  --chart-2: #4cc38a;
+  --chart-3: #e0a93b;
+  --chart-4: #f07a6c;
+  --chart-5: #818cf8;
+}
+
+@utility bg-app {
+  background-color: var(--bg);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  *:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+  html,
+  body {
+    height: 100%;
+  }
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    font-size: 0.9375rem;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--brand) 28%, transparent);
+    color: var(--text);
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    letter-spacing: -0.022em;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border-radius: 9999px;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
+}
+
+@layer components {
+  /* Type scale: 12 / 13 / 14 / 16 / 20 / 24 / 32 with explicit line-heights.
+     12/14/16/20/24 map to text-xs/sm/base/xl/2xl; 13 and 32 are custom. */
+  .text-13 {
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .text-display {
+    font-size: 32px;
+    line-height: 1.25;
+    letter-spacing: -0.022em;
+  }
+  /* Tabular numerals for tables, scores, telemetry (replaces font-mono). */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+  /* Readable measure for prose blocks. */
+  .prose {
+    max-width: 70ch;
+  }
+  /* Evidence-backed text: highlight wash under the lower ~40%, ink unchanged. */
+  .evidence-mark {
+    background-color: transparent;
+    background-image: linear-gradient(
+      transparent 62%,
+      color-mix(in srgb, var(--evidence) 55%, transparent) 62%
+    );
+    border-radius: 2px;
+    color: inherit;
+  }
+}
+
+/* Resume Studio left pane — constrain the Radix ScrollArea content wrapper.
+   Radix renders ScrollArea content inside `[data-radix-scroll-area-viewport]`
+   with inline `display: table; min-width: 100%`. A CSS table auto-sizes itself
+   to the widest descendant's intrinsic width (it is not constrained by its
+   containing block), so on the populated ATS/tailoring state the pane's
+   ~389px viewport expanded to ~3970px and pushed the Tailor CTA off-screen.
+   Replace the table sizing with a block-level box that tracks the viewport
+   width exactly, while preserving vertical scrolling (height still grows with
+   content). Scoped to the left-pane ScrollArea via `.scroll-area-constrained`
+   so no other ScrollArea in the app changes behavior. */
+.scroll-area-constrained [data-radix-scroll-area-viewport] > div {
+  display: block !important;
+  width: 100% !important;
+  min-width: 100% !important;
+  max-width: 100% !important;
+  min-height: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

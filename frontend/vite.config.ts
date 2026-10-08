@@ -1,0 +1,33 @@
+// @lovable.dev/vite-tanstack-config already includes the following — do NOT add them manually
+// or the app will break with duplicate plugins:
+//   - TanStack devtools (dev-only, first), tanstackStart, viteReact, tailwindcss, tsConfigPaths,
+//     nitro (build-only using cloudflare as a default target), VITE_* env injection, @ path alias,
+//     React/TanStack dedupe, error logger plugins, and sandbox detection (port/host/strictPort).
+// You can pass additional config via defineConfig({ vite: { ... }, etc... }) if needed.
+import { defineConfig } from "@lovable.dev/vite-tanstack-config";
+
+export default defineConfig({
+  // Production deploy target: Vercel. The wrapper defaults Nitro to
+  // `cloudflare-module` via `defaultPreset`; an explicit `nitro.preset`
+  // hard-pins our own CI/Vercel builds to `vercel`. Inside Lovable's
+  // sandbox the wrapper still forces Cloudflare (preview only).
+  nitro: { preset: "vercel" },
+  tanstackStart: {
+    // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
+    // nitro/vite builds from this
+    server: { entry: "server" },
+  },
+  vite: {
+    server: {
+      // Pin the dev server to port 8080 explicitly so the CORS allowlist in the
+      // backend (which includes localhost:8080 / 127.0.0.1:8080) stays in sync.
+      // Without this, Vite's sandbox detection can auto-increment to a different
+      // free port and silently break CORS again.
+      port: 8080,
+      strictPort: true,
+      // Dev-only: allow the containerized test browser to reach the dev server
+      // via host.docker.internal. No effect on production builds.
+      allowedHosts: ["host.docker.internal"],
+    },
+  },
+});

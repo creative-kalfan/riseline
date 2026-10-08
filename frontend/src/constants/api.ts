@@ -1,0 +1,132 @@
+import type { ApplicationChildKind } from "../types/application";
+
+export const API_ENDPOINTS = {
+  AUTH: {
+    LOGIN: "/auth/login",
+    LOGOUT: "/auth/logout",
+    REFRESH: "/auth/refresh",
+    ME: "/auth/me",
+  },
+  RESUME: {
+    LIST: "/api/resumes",
+    GET: (id: string) => `/api/resumes/${id}`,
+    CREATE: "/api/resumes",
+    UPDATE: (id: string) => `/api/resumes/${id}`,
+    DELETE: (id: string) => `/api/resumes/${id}`,
+    REGISTER: "/api/resumes/register",
+    PARSE: (id: string) => `/api/resumes/${id}/parse`,
+    COMPLETENESS: (id: string) => `/api/resumes/${id}/completeness`,
+  },
+  TEMPLATES: {
+    LIST: "/api/templates",
+    GET: (id: string) => `/api/templates/${id}`,
+  },
+  ATS: {
+    ANALYZE: "/api/ats/analyze",
+    HISTORY: (resumeId: string) => `/api/ats/resume/${resumeId}/history`,
+    REPORT: (id: string) => `/api/ats/reports/${id}`,
+  },
+  JOBS: {
+    LIST: "/jobs",
+    SEARCH: "/jobs/search",
+    PERSONALIZED: "/jobs/personalized",
+    GET: (id: string) => `/jobs/${id}`,
+    SAVE: "/jobs/save",
+    UNSAVE: (id: string) => `/jobs/${id}/unsave`,
+    SAVED: "/jobs/saved",
+    MATCH: "/jobs/match",
+    APPLY: (id: string) => `/jobs/${id}/apply`,
+    INTELLIGENCE_ANALYZE: (id: string) => `/jobs/${id}/intelligence/analyze`,
+    INTELLIGENCE_GET: (id: string) => `/jobs/${id}/intelligence`,
+  },
+  RECOMMENDATIONS: {
+    USER: "/recommendations",
+    RESUME: (resumeId: string) => `/recommendations/resume/${resumeId}`,
+    VIEWED: (id: string) => `/recommendations/${id}/viewed`,
+    APPLIED: (id: string) => `/recommendations/${id}/applied`,
+  },
+  APPLICATIONS: {
+    LIST: "/applications",
+    GET: (id: string) => `/applications/${id}`,
+    CREATE: "/applications",
+    UPDATE: (id: string) => `/applications/${id}`,
+    DELETE: (id: string) => `/applications/${id}`,
+    STATS: "/applications/stats",
+    STATUS: (id: string) => `/applications/${id}/status`,
+    FAVORITE: (id: string) => `/applications/${id}/favorite`,
+    ARCHIVE: (id: string) => `/applications/${id}/archive`,
+    EVENTS: (id: string) => `/applications/${id}/events`,
+    CHILD: (id: string, kind: ApplicationChildKind) => `/applications/${id}/${kind}`,
+    CHILD_ITEM: (id: string, kind: ApplicationChildKind, childId: string) =>
+      `/applications/${id}/${kind}/${childId}`,
+  },
+  DASHBOARD: {
+    TELEMETRY: "/api/dashboard",
+    STATS: "/dashboard/stats",
+    ACTIVITY: "/dashboard/activity",
+    WEEKLY_PROGRESS: "/dashboard/weekly-progress",
+  },
+  NOTIFICATIONS: {
+    LIST: "/notifications",
+    UNREAD: "/notifications/unread",
+    MARK_READ: "/notifications/read",
+    MARK_ALL_READ: "/notifications/read-all",
+    DELETE: (id: string) => `/notifications/${id}`,
+    PREFERENCES: "/notification-preferences",
+  },
+  COPILOT: {
+    CHAT: "/api/copilot/chat",
+    SEND_MESSAGE: "/copilot/message",
+    SESSION: (id: string) => `/copilot/sessions/${id}`,
+    SESSIONS: "/copilot/sessions",
+    DELETE_SESSION: (id: string) => `/copilot/sessions/${id}`,
+  },
+  OPTIMIZATION: {
+    GENERATE: "/api/optimization/generate",
+    ACCEPT: "/api/optimization/suggestions/accept",
+    REJECT: "/api/optimization/suggestions/reject",
+    SESSION: (sessionId: string) => `/api/optimization/sessions/${sessionId}`,
+    SESSIONS: (resumeId: string) => `/api/optimization/resume/${resumeId}/sessions`,
+    HISTORY: (resumeId: string) => `/api/optimization/resume/${resumeId}/history`,
+    REANALYZE: "/api/optimization/reanalyze",
+  },
+  VERSIONS: {
+    LIST: (resumeId: string) => `/api/resumes/${resumeId}/versions`,
+    CREATE: (resumeId: string) => `/api/resumes/${resumeId}/versions`,
+    GET: (versionId: string) => `/api/resumes/versions/${versionId}`,
+    UPDATE: (versionId: string) => `/api/resumes/versions/${versionId}`,
+    DELETE: (versionId: string) => `/api/resumes/versions/${versionId}`,
+    DUPLICATE: (versionId: string) => `/api/resumes/versions/${versionId}/duplicate`,
+    SET_MASTER: (versionId: string) => `/api/resumes/versions/${versionId}/set-master`,
+    DIFF: (versionId: string) => `/api/resumes/versions/${versionId}/diff`,
+    SAVE_CONTENT: (versionId: string) => `/api/resumes/versions/${versionId}/save-content`,
+  },
+  EXPORT: {
+    PDF: (resumeId: string, versionId: string) =>
+      `/api/export/resumes/${resumeId}/versions/${versionId}/pdf`,
+    DOCX: (resumeId: string, versionId: string) =>
+      `/api/export/resumes/${resumeId}/versions/${versionId}/docx`,
+  },
+  INTERVIEW_PREP: {
+    GENERATE: "/api/interview-prep/generate",
+    GENERATE_DRILLS: "/api/interview-prep/generate-drills",
+    CRITIQUE: "/api/interview-prep/critique",
+    SESSIONS: "/api/interview-prep/sessions",
+    SESSION: (id: string) => `/api/interview-prep/sessions/${id}`,
+    REGENERATE: (id: string) => `/api/interview-prep/sessions/${id}/regenerate`,
+    QUESTION: (id: string) => `/api/interview-prep/questions/${id}`,
+    BY_APPLICATION: (applicationId: string) =>
+      `/api/interview-prep/by-application/${applicationId}`,
+  },
+} as const;
+
+export const HTTP_STATUS = {
+  OK: 200,
+  CREATED: 201,
+  NO_CONTENT: 204,
+  BAD_REQUEST: 400,
+  UNAUTHORIZED: 401,
+  FORBIDDEN: 403,
+  NOT_FOUND: 404,
+  INTERNAL_SERVER_ERROR: 500,
+} as const;

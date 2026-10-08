@@ -1,0 +1,505 @@
+"""Durable, database-backed scheduling for registered crawl targets."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import logging
+import os
+import time
+import urllib.request
+from datetime import datetime, timezone
+from typing import Any
+
+from app.config import get_settings
+from app.db.supabase import get_service_client
+
+logger = logging.getLogger(__name__)
+_migration_available: bool | None = None
+_migration_probed_at: float = 0.0
+
+
+def adaptive_interval_minutes(
+    current: int, *, changed: bool, unchanged_streak: int, priority: int,
+    minimum: int = 360, maximum: int = 2880,
+) -> int:
+    """Return bounded cadence; P0 targets remain at most daily."""
+    if changed:
+        value = max(minimum, current // 2)
+    elif unchanged_streak >= 3:
+        value = min(maximum, max(current, minimum) * 2)
+    else:
+        value = current
+    if priority == 0:
+        value = min(value, 1440)
+    return max(1, value)
+
+
+def deterministic_job_id(source: str, slug: str, next_run_at: str) -> str:
+    stamp = next_run_at.replace(":", "").replace("-", "").replace("+", "")
+    digest = hashlib.sha1(f"{source}:{slug}:{stamp}".encode()).hexdigest()[:12]
+    safe_slug = "".join(ch if ch.isalnum() else "-" for ch in slug.lower()).strip("-")[:40]
+    return f"crawl:{source}:{safe_slug}:{digest}"
+
+
+def _rpc(name: str, params: dict[str, Any]) -> Any:
+    return get_service_client().rpc(name, params).execute().data
+
+
+def _reset_migration_probe() -> None:
+    """Clear the cached migration probe result so the next check re-probes."""
+    global _migration_available, _migration_probed_at
+    _migration_available = None
+    _migration_probed_at = 0.0
+
+
+def _migration_probe() -> bool:
+    """Report whether the crawl_targets table (migration 025) is usable.
+
+    The result is cached, but re-probed once it is older than
+    ``settings.migration_probe_recheck_seconds`` so that applying migration 025
+    after a deploy restores dispatch without a process restart. A cached value of
+    ``None`` always forces a fresh probe.
+    """
+    global _migration_available, _migration_probed_at
+
+    recheck = max(int(get_settings().migration_probe_recheck_seconds), 0)
+    fresh = _migration_available is not None and (time.monotonic() - _migration_probed_at) < recheck
+    if fresh:
+        if not _migration_available:
+            logger.critical(
+                "crawl_targets migration 025 is still unavailable; DB crawl dispatch is "
+                "DISABLED (no crawl targets will be dispatched). Apply migration 025 to "
+                "restore dispatch; the probe retries every %ss.",
+                recheck,
+            )
+        return _migration_available
+
+    previously_available = _migration_available
+    try:
+        get_service_client().table("crawl_targets").select("id").limit(0).execute()
+        _migration_available = True
+    except Exception as exc:
+        _migration_available = False
+        logger.critical(
+            "crawl_targets migration 025 is unavailable; DB crawl dispatch is DISABLED "
+            "(no crawl targets will be dispatched, error=%s). Apply migration 025; the "
+            "probe retries every %ss.",
+            type(exc).__name__,
+            recheck,
+        )
+    _migration_probed_at = time.monotonic()
+
+    if _migration_available and previously_available is False:
+        logger.warning(
+            "crawl_targets migration 025 is now available; DB crawl dispatch is re-enabled "
+            "without a restart."
+        )
+    return _migration_available
+
+
+async def _post_webhook(url: str, payload: dict[str, Any] | None = None) -> None:
+    def post() -> None:
+        data = json.dumps(payload or {}).encode() if payload is not None else None
+        request = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=5):
+            pass
+    try:
+        await asyncio.to_thread(post)
+    except Exception:
+        logger.warning("crawl webhook request failed", exc_info=True)
+
+
+async def check_crawl_slo() -> dict[str, int]:
+    settings = get_settings()
+    try:
+        rows = await asyncio.to_thread(
+            lambda: get_service_client().table("crawl_targets").select(
+                "source,slug,next_run_at,last_success_at,created_at"
+            ).eq("status", "active").execute().data or []
+        )
+    except Exception as exc:
+        logger.warning("crawl SLO query unavailable (%s)", type(exc).__name__)
+        return {"overdue": 0, "no_success_36h": 0}
+    now = datetime.now(timezone.utc)
+    overdue = no_success = 0
+    for row in rows:
+        due = _parse_dt(row.get("next_run_at"))
+        success = _parse_dt(row.get("last_success_at"))
+        created = _parse_dt(row.get("created_at"))
+        overdue += int(due is not None and (now - due).total_seconds() > settings.slo_overdue_minutes * 60)
+        reference = success or created
+        no_success += int(reference is not None and (now - reference).total_seconds() > 36 * 3600)
+    if overdue or no_success:
+        message = f"Crawl SLO breached: overdue={overdue} no_success_36h={no_success}"
+        try:
+            import sentry_sdk
+            sentry_sdk.capture_message(message, level="error")
+        except Exception:
+            logger.error(message)
+        if settings.alert_webhook_url:
+            await _post_webhook(settings.alert_webhook_url, {"message": message})
+    return {"overdue": overdue, "no_success_36h": no_success}
+
+
+def _parse_dt(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+    except (TypeError, ValueError):
+        return None
+
+
+# crawl_company_job is registered with timeout=300 (app/workers/jobs/crawl_jobs.py).
+_CRAWL_JOB_TIMEOUT_SECONDS = 300
+
+
+def _crawl_job_timeout_seconds() -> int:
+    try:
+        from app.workers.registry import get_job_definition
+
+        return int(get_job_definition("crawl_company_job").timeout)
+    except Exception:
+        return _CRAWL_JOB_TIMEOUT_SECONDS
+
+
+def _worker_capacity() -> int:
+    """Return the ARQ worker's real ``max_jobs``.
+
+    ARQ injects only ``ctx['redis']`` (arq/worker.py:356); there is no
+    ``ctx['worker']``, so capacity must come from WorkerSettings. Imported
+    lazily because app.workers.settings reaches this module through
+    app.workers.jobs.crawl_jobs.
+    """
+    try:
+        from app.workers.settings import WorkerSettings
+
+        return max(1, int(getattr(WorkerSettings, "max_jobs", 1)))
+    except Exception:
+        return max(1, int(get_settings().persistence_max_concurrency))
+
+
+async def _in_flight_crawls() -> int | None:
+    """Return count of currently leased in-flight crawl targets (lease_until > now())."""
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        res = await asyncio.to_thread(
+            lambda: get_service_client().table("crawl_targets")
+            .select("id", count="exact")
+            .gt("lease_until", now_iso)
+            .execute()
+        )
+        count_val = getattr(res, "count", None)
+        if isinstance(count_val, (int, float)):
+            return int(count_val)
+        data = getattr(res, "data", [])
+        return len(data) if isinstance(data, list) else 0
+    except Exception as exc:
+        logger.warning("in-flight crawl count unavailable (%s)", type(exc).__name__)
+        return None
+
+
+def _check_lease_coverage(settings: Any, capacity: int) -> None:
+    """Warn when the lease cannot outlive the worst-case queue wait.
+
+    The admission guard below only admits while depth < capacity, so at most
+    ``capacity`` jobs are ever ahead of a newly claimed one and every one of
+    them completes within a single job timeout. Worst-case wait is therefore one
+    job timeout. A lease at or below that lets the next tick re-claim the same
+    still-queued target.
+    """
+    timeout = _crawl_job_timeout_seconds()
+    worst_case_wait = timeout
+    if settings.crawl_lease_seconds <= worst_case_wait:
+        logger.warning(
+            "crawl lease does not cover worst-case queue wait: lease=%ss <= "
+            "worst_case_wait=%ss (capacity=%s x timeout=%ss). Targets can be "
+            "re-claimed while still queued, causing double dispatch.",
+            settings.crawl_lease_seconds,
+            worst_case_wait,
+            capacity,
+            timeout,
+        )
+
+
+async def dispatch_due_targets(ctx: dict[str, Any]) -> int:
+    """Claim and enqueue one bounded batch; leases recover crashed dispatchers."""
+    if not _migration_probe():
+        return 0
+    settings = get_settings()
+
+    # Soft memory limit guard: protect 512MB Render free tier from memory exhaustion
+    try:
+        import psutil
+        rss_mb = psutil.Process().memory_info().rss / (1024.0 * 1024.0)
+        if rss_mb >= settings.worker_soft_memory_limit_mb:
+            logger.warning(
+                "MEMORY_BACKPRESSURE: worker RSS=%.1fMB >= soft limit=%.1fMB; deferring crawl target admission",
+                rss_mb,
+                settings.worker_soft_memory_limit_mb,
+            )
+            return 0
+    except Exception as mem_exc:
+        logger.debug("Failed to inspect process memory: %s", mem_exc)
+
+
+    capacity = _worker_capacity()
+    _check_lease_coverage(settings, capacity)
+    in_flight = await _in_flight_crawls()
+    if in_flight is None:
+        limit = max(1, min(settings.dispatch_batch, capacity))
+        logger.warning(
+            "in-flight crawl count unknown; admission guard DEGRADED to capacity=%s only "
+            "(no backpressure on in-flight crawls).",
+            capacity,
+        )
+    else:
+        free = capacity - in_flight
+        if free <= 0:
+            logger.info(
+                "crawl admission backpressure: in_flight=%s >= capacity=%s; claiming nothing.",
+                in_flight,
+                capacity,
+            )
+            return 0
+        limit = max(1, min(settings.dispatch_batch, free))
+    try:
+        rows = await asyncio.to_thread(_rpc, "claim_due_crawl_targets", {
+            "p_limit": limit, "p_lease_seconds": settings.crawl_lease_seconds,
+        })
+    except Exception as exc:
+        logger.warning("crawl target claim failed (%s)", type(exc).__name__)
+        return 0
+
+    from app.workers.dispatcher import enqueue_scheduled_crawl
+    enqueued = 0
+    for row in rows or []:
+        source, slug = row["source"], row.get("slug") or ""
+        
+        # Firecrawl cost control: pause when active validated ATS target exists or consecutive zero threshold met
+        if source == "firecrawl":
+            company = slug.partition("|")[0] if "|" in slug else slug
+            should_pause = False
+            pause_reason = ""
+            
+            # Check 1: Active validated ATS target exists for the same company
+            try:
+                from app.crawlers.crawl_registry import all_targets
+                ats_match = next(
+                    (t for t in all_targets() if t.company.lower() == company.lower() and t.source in ("ashby", "greenhouse", "lever", "smartrecruiters", "workday") and t.enabled),
+                    None
+                )
+                if ats_match:
+                    should_pause = True
+                    pause_reason = f"active validated ATS target exists ({ats_match.source}:{ats_match.slug})"
+            except Exception:
+                pass
+            
+            # Check 2: Returned 0 jobs for N consecutive crawls
+            if not should_pause:
+                zero_streak = int(row.get("consecutive_zero_crawls", 0) or 0)
+                if zero_streak >= settings.firecrawl_consecutive_zero_pause:
+                    should_pause = True
+                    pause_reason = f"returned 0 jobs for {zero_streak} consecutive crawls"
+            
+            if should_pause:
+                logger.info("Pausing Firecrawl target %s (%s).", slug, pause_reason)
+                try:
+                    await asyncio.to_thread(
+                        lambda: get_service_client().table("crawl_targets")
+                        .update({"status": "paused", "last_error": f"Paused: {pause_reason}"})
+                        .eq("source", source).eq("slug", slug).execute()
+                    )
+                except Exception as p_exc:
+                    logger.warning("Failed to pause Firecrawl target in DB: %s", p_exc)
+                continue
+
+        run_id = deterministic_job_id(source, slug, str(row.get("next_run_at", "")))
+        try:
+            job_id = await enqueue_scheduled_crawl(source, slug, run_id)
+            if job_id:
+                enqueued += 1
+            else:
+                await complete_target(source, slug, False, error="ARQ duplicate or enqueue rejected")
+        except Exception as exc:
+            logger.warning("crawl enqueue failed source=%s slug=%s (%s)", source, slug, type(exc).__name__)
+            await complete_target(source, slug, False, error=type(exc).__name__)
+    return enqueued
+
+
+async def complete_target(
+    source: str, slug: str, success: bool, *, job_count: int = 0,
+    content_hash: str | None = None, error: str | None = None, not_found: bool = False,
+) -> None:
+    # Only mutate leased targets once migration 025 is confirmed. Probe here
+    # (cached) because in CRAWL_SCHEDULER_MODE=github dispatch runs in the web
+    # process, so the worker never probes via dispatch_due_targets.
+    if not await asyncio.to_thread(_migration_probe):
+        return
+    settings = get_settings()
+    priority = 1
+    min_interval = settings.crawl_min_interval_minutes
+    if source == "firecrawl":
+        firecrawl_floor_minutes = max(1, int(settings.firecrawl_min_interval_hours * 60))
+        min_interval = max(min_interval, firecrawl_floor_minutes)
+    interval = min_interval
+    try:
+        record = await asyncio.to_thread(
+            lambda: get_service_client().table("crawl_targets").select(
+                "priority,interval_minutes,hash_unchanged_streak,content_hash"
+            ).eq("source", source).eq("slug", slug).limit(1).execute().data
+        )
+        if record:
+            priority = int(record[0].get("priority", 1))
+            interval = adaptive_interval_minutes(
+                int(record[0].get("interval_minutes", interval)),
+                changed=content_hash is not None and content_hash != record[0].get("content_hash"),
+                unchanged_streak=int(record[0].get("hash_unchanged_streak", 0)) + 1,
+                priority=priority,
+                minimum=min_interval,
+                maximum=settings.crawl_max_interval_minutes,
+            )
+        await asyncio.to_thread(_rpc, "complete_crawl_target", {
+            "p_source": source, "p_slug": slug, "p_success": success,
+            "p_interval_minutes": interval, "p_job_count": job_count,
+            "p_content_hash": content_hash, "p_error": error, "p_not_found": not_found,
+            "p_min_interval_minutes": min_interval,
+            "p_max_interval_minutes": settings.crawl_max_interval_minutes,
+            "p_dead_after_failures": settings.crawl_dead_after_failures,
+        })
+    except Exception as exc:
+        logger.warning("crawl target completion unavailable (%s)", type(exc).__name__)
+
+
+async def backfill_missing_intelligence(ctx: dict[str, Any]) -> int:
+    """Analyze active jobs missing intelligence fields, bounded per tick."""
+    import hashlib
+    import random
+    from app.workers.dispatcher import _get_redis
+
+    settings = get_settings()
+    limit = max(0, int(settings.analysis_backfill_limit_per_tick))
+    if limit <= 0:
+        return 0
+
+    missing_jobs: list[dict[str, Any]] = []
+    # 1. Try RPC from migration 028
+    try:
+        data = await asyncio.to_thread(_rpc, "get_active_jobs_missing_intelligence", {"p_limit": limit})
+        if isinstance(data, list):
+            missing_jobs = data
+    except Exception:
+        missing_jobs = []
+
+    # 2. Fallback to direct client query if RPC unavailable
+    if not missing_jobs:
+        try:
+            client = get_service_client()
+            res = await asyncio.to_thread(
+                lambda: client.table("jobs")
+                .select("id, external_job_id")
+                .eq("is_active", True)
+                .order("created_at", desc=True)
+                .limit(limit * 3)
+                .execute()
+            )
+            candidates = res.data or []
+            cand_ids = [c["id"] for c in candidates if c.get("id")]
+            if cand_ids:
+                intel_res = await asyncio.to_thread(
+                    lambda: client.table("job_intelligence")
+                    .select("job_id")
+                    .in_("job_id", cand_ids)
+                    .execute()
+                )
+                existing_ids = {r["job_id"] for r in (intel_res.data or []) if r.get("job_id")}
+                missing_jobs = [c for c in candidates if c["id"] not in existing_ids][:limit]
+        except Exception as exc:
+            logger.warning("backfill candidate lookup failed (%s)", type(exc).__name__)
+            return 0
+
+    if not missing_jobs:
+        return 0
+
+    job_ids = [
+        str(m.get("id") or m.get("external_job_id"))
+        for m in missing_jobs
+        if m.get("id") or m.get("external_job_id")
+    ]
+    if not job_ids:
+        return 0
+
+    chunk_size = max(1, int(settings.analysis_batch_chunk_size))
+    redis = await _get_redis()
+    enqueued = 0
+    now_ts = int(time.time())
+
+    for chunk_idx, i in enumerate(range(0, len(job_ids), chunk_size)):
+        chunk = job_ids[i:i + chunk_size]
+        chunk_hash = hashlib.sha1(":".join(chunk).encode()).hexdigest()[:8]
+        batch_job_id = f"analyze_backfill:{now_ts}:{chunk_idx}:{chunk_hash}"
+        jitter_sec = int(chunk_idx * 2 + random.uniform(1, 3))
+        try:
+            await redis.enqueue_job(
+                "analyze_jobs_batch",
+                chunk,
+                _job_id=batch_job_id,
+                _defer_by=jitter_sec,
+                _queue_name=settings.analysis_queue_name,
+            )
+            enqueued += len(chunk)
+        except Exception as exc:
+            logger.warning("backfill analysis enqueue chunk failed (%s)", type(exc).__name__)
+
+    if enqueued > 0:
+        logger.info(
+            "BACKFILL_ANALYSIS enqueued=%d chunks=%d queue=%s",
+            enqueued,
+            (len(job_ids) + chunk_size - 1) // chunk_size,
+            settings.analysis_queue_name,
+        )
+    return enqueued
+
+
+_last_slo_at: float | None = None
+_last_discovery_date = ""
+
+
+async def run_dispatch_tick(ctx: dict[str, Any]) -> dict[str, int]:
+    """Run exactly one bounded scheduler tick: dispatch, backfill, hourly SLO, daily discovery.
+
+    Shared by the in-worker ``dispatcher_loop`` and the externally triggered
+    ``POST /internal/scheduler/crawl-tick`` endpoint, so there is one source of
+    truth for scheduling. Concurrent ticks are safe: claims use
+    ``FOR UPDATE SKIP LOCKED`` plus leases (migration 025).
+    """
+    global _last_slo_at, _last_discovery_date
+    settings = get_settings()
+    enqueued = await dispatch_due_targets(ctx)
+    backfilled = await backfill_missing_intelligence(ctx)
+    now = time.monotonic()
+    if _last_slo_at is None or now - _last_slo_at >= 3600:
+        await check_crawl_slo()
+        _last_slo_at = now
+    date_key = datetime.now(timezone.utc).date().isoformat()
+    if date_key != _last_discovery_date:
+        try:
+            from app.workers.dispatcher import _get_redis
+            redis = await _get_redis()
+            await redis.enqueue_job("discover_ats_targets", _job_id=f"discover-ats:{date_key}")
+            _last_discovery_date = date_key
+        except Exception as exc:
+            logger.warning("ATS discovery enqueue failed (%s)", type(exc).__name__)
+    if settings.heartbeat_url:
+        await _post_webhook(settings.heartbeat_url)
+    return {"enqueued": enqueued, "analysis_backfill_enqueued": backfilled}
+
+
+async def dispatcher_loop(ctx: dict[str, Any]) -> None:
+    """Run scheduler ticks until cancelled (CRAWL_SCHEDULER_MODE=worker)."""
+    while True:
+        await run_dispatch_tick(ctx)
+        await asyncio.sleep(max(5, get_settings().dispatch_tick_seconds))

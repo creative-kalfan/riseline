@@ -1,0 +1,445 @@
+"""PDF Compilation Engine for CareerOS.
+
+Renders the canonical ``ResumeDocumentModel`` to PDF via instant Typst
+rendering (primary) with a high-fidelity PyMuPDF layout fallback, then runs
+visual verification.
+
+The legacy headless-LibreOffice DOCX-to-PDF conversion was removed: Typst
+needs no JRE, renders in milliseconds, and emits selectable ATS-friendly
+text directly from the document model.
+"""
+
+from __future__ import annotations
+
+import io
+import logging
+from typing import Optional
+
+import fitz  # PyMuPDF
+
+from .document_model import ResumeDocumentModel
+from .style_model import DocumentStyleModel
+from .visual_verification import VisualVerificationEngine, VisualVerificationResult
+from app.services.pdf.typst_compiler import (
+    TypstNotAvailableError,
+    TypstPageBudgetExceeded,
+    compile_typst_to_pdf,
+    render_document_model_to_typst,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _render_document_model_to_html(doc_model: ResumeDocumentModel) -> str:
+    """Render canonical ResumeDocumentModel into clean HTML for PyMuPDF Story pagination."""
+    style = doc_model.style or DocumentStyleModel()
+    hdr = doc_model.header
+
+    sections_html = []
+
+    # Header
+    name_html = f'<h1 class="header-name">{hdr.full_name}</h1>' if hdr.full_name else ""
+    headline_html = f'<div class="header-headline">{hdr.headline}</div>' if hdr.headline else ""
+    contact_html = f'<div class="header-contact">{hdr.contact_line()}</div>' if hdr.contact_line() else ""
+    sections_html.append(f'<div class="header-block">{name_html}{headline_html}{contact_html}</div>')
+
+    for sec in doc_model.section_order:
+        if sec == "summary" and doc_model.summary and doc_model.summary.text.strip():
+            sections_html.append(
+                f'<div class="section">'
+                f'<div class="section-title">PROFESSIONAL SUMMARY</div>'
+                f'<p class="summary-p">{doc_model.summary.text.strip()}</p>'
+                f'</div>'
+            )
+
+        elif sec == "experience" and doc_model.experience:
+            items = []
+            for exp in doc_model.experience:
+                date_loc = " | ".join(filter(None, [exp.date_range, exp.location]))
+                bullets = "".join(f'<li>{b.text.strip()}</li>' for b in exp.bullets if b.text.strip())
+                sub_html = ""
+                if getattr(exp, "sub_engagements", None):
+                    sub_heading = getattr(exp, "sub_engagements_heading", "Key Sub-Engagements")
+                    sub_html += f'<div class="sub-engagements-group"><div class="sub-engagements-title">{sub_heading}</div>'
+                    sub_items = []
+                    for sub in exp.sub_engagements:
+                        sub_bullets = "".join(f'<li>{b.text.strip()}</li>' for b in sub.bullets if b.text.strip())
+                        desc_html = f'<div class="sub-engagement-desc">{sub.description}</div>' if sub.description else ''
+                        b_html = f'<ul class="bullet-list sub-bullet-list">{sub_bullets}</ul>' if sub_bullets else ''
+                        sub_items.append(
+                            f'<div class="sub-engagement">'
+                            f'<div class="sub-engagement-name">{sub.name}</div>'
+                            f'{desc_html}'
+                            f'{b_html}'
+                            f'</div>'
+                        )
+                    sub_html += "".join(sub_items) + '</div>'
+
+                items.append(
+                    f'<div class="entry">'
+                    f'<table class="entry-header-table"><tr>'
+                    f'<td class="entry-left"><strong>{exp.role}</strong>' + (f' | {exp.company}' if exp.company else '') + f'</td>'
+                    f'<td class="entry-right">{date_loc}</td>'
+                    f'</tr></table>'
+                    + (f'<ul class="bullet-list">{bullets}</ul>' if bullets else '')
+                    + sub_html +
+                    f'</div>'
+                )
+            sections_html.append(f'<div class="section"><div class="section-title">EXPERIENCE</div>{"".join(items)}</div>')
+
+        elif sec == "internships" and doc_model.internships:
+            items = []
+            for exp in doc_model.internships:
+                date_loc = " | ".join(filter(None, [exp.date_range, exp.location]))
+                bullets = "".join(f'<li>{b.text.strip()}</li>' for b in exp.bullets if b.text.strip())
+                items.append(
+                    f'<div class="entry">'
+                    f'<table class="entry-header-table"><tr>'
+                    f'<td class="entry-left"><strong>{exp.role}</strong>' + (f' | {exp.company}' if exp.company else '') + f'</td>'
+                    f'<td class="entry-right">{date_loc}</td>'
+                    f'</tr></table>'
+                    + (f'<ul class="bullet-list">{bullets}</ul>' if bullets else '') +
+                    f'</div>'
+                )
+            sections_html.append(f'<div class="section"><div class="section-title">INTERNSHIPS</div>{"".join(items)}</div>')
+
+        elif sec == "projects" and doc_model.projects:
+            items = []
+            for prj in doc_model.projects:
+                tech_str = f' <em>({", ".join(prj.technologies)})</em>' if prj.technologies else ""
+                bullets_content = []
+                if prj.description:
+                    bullets_content.append(f'<li>{prj.description}</li>')
+                for b in prj.bullets:
+                    if b.text.strip() != prj.description.strip():
+                        bullets_content.append(f'<li>{b.text.strip()}</li>')
+                b_html = f'<ul class="bullet-list">{"".join(bullets_content)}</ul>' if bullets_content else ""
+                items.append(
+                    f'<div class="entry">'
+                    f'<div class="entry-title-line"><strong>{prj.name}</strong>{tech_str}</div>'
+                    f'{b_html}'
+                    f'</div>'
+                )
+            proj_title = getattr(doc_model, "projects_heading", "PROJECTS").upper()
+            sections_html.append(f'<div class="section"><div class="section-title">{proj_title}</div>{"".join(items)}</div>')
+
+        elif sec == "education" and doc_model.education:
+            items = []
+            for edu in doc_model.education:
+                f_study = getattr(edu, "field_of_study", getattr(edu, "field", ""))
+                deg = " in ".join(filter(None, [edu.degree, f_study])) or "Degree"
+                inst = f" — {edu.institution}" if edu.institution else ""
+                gpa_html = ""
+                if edu.gpa:
+                    gpa_label = edu.gpa if any(k in edu.gpa.lower() for k in ("gpa", "cgpa")) else f"CGPA: {edu.gpa}"
+                    gpa_html = f'<div class="edu-gpa" style="font-size: {style.meta_size_pt}pt; color: #{style.meta_color_hex}; margin-top: 1pt;">{gpa_label}</div>'
+                cw_html = f'<p class="edu-cw">Coursework: {", ".join(edu.coursework)}</p>' if edu.coursework else ""
+                items.append(
+                    f'<div class="entry">'
+                    f'<table class="entry-header-table"><tr>'
+                    f'<td class="entry-left"><strong>{deg}</strong>{inst}</td>'
+                    f'<td class="entry-right">{edu.date_range}</td>'
+                    f'</tr></table>'
+                    f'{gpa_html}'
+                    f'{cw_html}'
+                    f'</div>'
+                )
+            sections_html.append(f'<div class="section"><div class="section-title">EDUCATION</div>{"".join(items)}</div>')
+
+        elif sec == "additional" and getattr(doc_model, "additional", None):
+            lis = "".join(f'<li>{item.text}</li>' for item in doc_model.additional if item.text)
+            add_title = getattr(doc_model, "additional_heading", "ADDITIONAL KNOWLEDGE").upper()
+            sections_html.append(f'<div class="section"><div class="section-title">{add_title}</div><ul class="bullet-list">{lis}</ul></div>')
+
+        elif sec == "skills" and doc_model.skills:
+            rows = []
+            for grp in doc_model.skills:
+                if grp.skills:
+                    rows.append(f'<div class="skill-row"><strong>{grp.category}:</strong> {", ".join(grp.skills)}</div>')
+            sections_html.append(f'<div class="section"><div class="section-title">SKILLS</div>{"".join(rows)}</div>')
+
+        elif sec == "certifications" and doc_model.certifications:
+            lis = "".join(f'<li>{c.text}</li>' for c in doc_model.certifications)
+            sections_html.append(f'<div class="section"><div class="section-title">CERTIFICATIONS</div><ul class="bullet-list">{lis}</ul></div>')
+
+    css = f"""
+body {{
+    font-family: "{style.body_font}", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: {style.body_size_pt}pt;
+    line-height: {style.line_spacing};
+    color: #{style.body_color_hex};
+    margin: 0;
+    padding: 0;
+}}
+.header-block {{
+    text-align: center;
+    margin-bottom: {style.section_after_pt}pt;
+}}
+.header-name {{
+    font-family: "{style.heading_font}", sans-serif;
+    font-size: {style.name_size_pt}pt;
+    font-weight: bold;
+    color: #{style.heading_color_hex};
+    margin: 0 0 {getattr(style, "header_spacing_pt", 2.0)}pt 0;
+}}
+.header-headline {{
+    font-size: {style.headline_size_pt}pt;
+    font-weight: bold;
+    color: #{style.accent_color_hex};
+    margin: 0 0 {getattr(style, "header_spacing_pt", 2.0)}pt 0;
+}}
+.header-contact {{
+    font-size: {style.meta_size_pt}pt;
+    color: #{style.meta_color_hex};
+    margin: 0;
+}}
+.section {{
+    margin-top: {style.section_before_pt}pt;
+    margin-bottom: {style.section_after_pt}pt;
+}}
+.section-title {{
+    font-family: "{style.heading_font}", sans-serif;
+    font-size: {style.section_heading_size_pt}pt;
+    font-weight: bold;
+    color: #{style.heading_color_hex};
+    border-bottom: {style.divider_thickness_pt}pt solid #{style.divider_color_hex};
+    padding-bottom: 1.5pt;
+    margin-bottom: {style.paragraph_after_pt}pt;
+    letter-spacing: 0.05em;
+}}
+.summary-p {{
+    margin: 0 0 {style.paragraph_after_pt}pt 0;
+    font-size: {style.body_size_pt}pt;
+}}
+.entry {{
+    margin-bottom: 4pt;
+}}
+.entry-header-table {{
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 1.5pt;
+}}
+.entry-left {{
+    text-align: left;
+    font-size: {style.subheading_size_pt}pt;
+    color: #{style.heading_color_hex};
+    padding: 0;
+}}
+.entry-right {{
+    text-align: right;
+    font-size: {style.meta_size_pt}pt;
+    color: #{style.meta_color_hex};
+    padding: 0;
+}}
+.entry-title-line {{
+    font-size: {style.subheading_size_pt}pt;
+    color: #{style.heading_color_hex};
+    margin-bottom: 1.5pt;
+}}
+.bullet-list {{
+    margin: 1.5pt 0 3pt 0;
+    padding-left: {style.bullet_indent_pt}pt;
+}}
+.bullet-list li {{
+    font-size: {style.body_size_pt}pt;
+    color: #{style.body_color_hex};
+    margin-bottom: {getattr(style, "bullet_spacing_pt", 2.0)}pt;
+}}
+.skill-row {{
+    font-size: {style.body_size_pt}pt;
+    margin-bottom: 2pt;
+}}
+.edu-cw {{
+    font-size: {style.meta_size_pt}pt;
+    color: #{style.meta_color_hex};
+    margin: 1.5pt 0 0 0;
+}}
+.sub-engagements-group {{
+    margin-top: 6pt;
+    margin-bottom: 3pt;
+    padding-left: 10pt;
+    border-left: 1.5pt solid #{getattr(style, "divider_color_hex", "cbd5e1")};
+}}
+.sub-engagements-title {{
+    font-size: {style.body_size_pt * 0.85:.1f}pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #{getattr(style, "accent_color_hex", style.heading_color_hex)};
+    margin-bottom: 3pt;
+}}
+.sub-engagement {{
+    margin-top: 3pt;
+    margin-bottom: 3pt;
+}}
+.sub-engagement-name {{
+    font-size: {style.body_size_pt * 0.95:.1f}pt;
+    font-weight: 600;
+    color: #{style.heading_color_hex};
+}}
+.sub-engagement-desc {{
+    font-size: {style.meta_size_pt}pt;
+    color: #{style.meta_color_hex};
+    margin-top: 0.5pt;
+    margin-bottom: 1.5pt;
+}}
+.sub-bullet-list {{
+    margin: 1pt 0 2pt 0;
+    padding-left: {style.bullet_indent_pt * 0.85:.1f}pt;
+}}
+.sub-bullet-list li {{
+    font-size: {style.body_size_pt * 0.95:.1f}pt;
+    margin-bottom: {getattr(style, "bullet_spacing_pt", 2.0) * 0.85:.1f}pt;
+}}
+"""
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>{css}</style></head>
+<body>{"".join(sections_html)}</body>
+</html>"""
+
+
+def _render_plain_textbox_fallback(doc_model: ResumeDocumentModel, style) -> bytes:
+    """Zero-dependency last-resort PDF renderer: plain text flow, never raises Story errors."""
+    lines: list[str] = []
+    hdr = doc_model.header
+    if hdr.full_name:
+        lines.append(hdr.full_name)
+    if hdr.headline:
+        lines.append(hdr.headline)
+    if hdr.contact_line():
+        lines.append(hdr.contact_line())
+    lines.append("")
+
+    for sec in doc_model.section_order:
+        if sec == "summary" and doc_model.summary and doc_model.summary.text.strip():
+            lines += ["PROFESSIONAL SUMMARY", doc_model.summary.text.strip(), ""]
+        elif sec == "skills" and doc_model.skills:
+            rows = [f"{grp.category}: " + ", ".join(grp.skills) for grp in doc_model.skills if grp.skills]
+            if rows:
+                lines += ["SKILLS"] + rows + [""]
+        elif sec == "experience" and doc_model.experience:
+            lines.append("EXPERIENCE")
+            for exp in doc_model.experience:
+                lines.append(f"{exp.role} | {exp.company}".strip(" |"))
+                if exp.date_range or exp.location:
+                    lines.append(" | ".join(filter(None, [exp.date_range, exp.location])))
+                lines += [f"- {b.text.strip()}" for b in exp.bullets if b.text.strip()]
+            lines.append("")
+        elif sec == "internships" and doc_model.internships:
+            lines.append("INTERNSHIPS")
+            for exp in doc_model.internships:
+                lines.append(f"{exp.role} | {exp.company}".strip(" |"))
+                if exp.date_range or exp.location:
+                    lines.append(" | ".join(filter(None, [exp.date_range, exp.location])))
+                lines += [f"- {b.text.strip()}" for b in exp.bullets if b.text.strip()]
+            lines.append("")
+        elif sec == "projects" and doc_model.projects:
+            lines.append("PROJECTS")
+            for prj in doc_model.projects:
+                tech = f" ({', '.join(prj.technologies)})" if prj.technologies else ""
+                lines.append(f"{prj.name}{tech}")
+                if prj.description:
+                    lines.append(f"- {prj.description}")
+                lines += [f"- {b.text.strip()}" for b in prj.bullets if b.text.strip() and b.text.strip() != (prj.description or "").strip()]
+            lines.append("")
+        elif sec == "education" and doc_model.education:
+            lines.append("EDUCATION")
+            for edu in doc_model.education:
+                deg = " in ".join(filter(None, [edu.degree, getattr(edu, 'field_of_study', getattr(edu, 'field', ''))])) or "Degree"
+                lines.append(f"{deg} - {edu.institution}".strip(" -"))
+            lines.append("")
+        elif sec == "certifications" and doc_model.certifications:
+            lines.append("CERTIFICATIONS")
+            lines += [f"- {c.text}" for c in doc_model.certifications if c.text]
+            lines.append("")
+        elif sec == "additional" and getattr(doc_model, "additional", None):
+            lines.append("ADDITIONAL KNOWLEDGE")
+            lines += [f"- {a.text}" for a in doc_model.additional if a.text]
+            lines.append("")
+
+    text = "\n".join(lines) or "Resume"
+    doc = fitz.open()
+    page = doc.new_page(width=style.page_width_pt, height=style.page_height_pt)
+    # Embed font buffer to ensure unicode glyphs (•, —) are preserved without substitution
+    helv_font = fitz.Font("helv")
+    page.insert_font(fontname="f_fallback", fontbuffer=helv_font.buffer)
+    rect = fitz.Rect(
+        style.margin_left_pt,
+        style.margin_top_pt,
+        style.page_width_pt - style.margin_right_pt,
+        style.page_height_pt - style.margin_bottom_pt,
+    )
+    page.insert_textbox(rect, text, fontsize=style.body_size_pt, fontname="f_fallback")
+    out = doc.tobytes(deflate=True)
+    doc.close()
+    return out
+
+
+class PdfCompiler:
+    """Compiles the Document Model to visually verified PDF bytes."""
+
+    def compile(
+        self,
+        doc_model: ResumeDocumentModel,
+        docx_bytes: Optional[bytes] = None,
+    ) -> tuple[bytes, VisualVerificationResult]:
+        """Render the document model to PDF and visually verify output.
+
+        ``docx_bytes`` is accepted for backward compatibility and ignored:
+        both strategies render directly from the document model.
+        """
+        style = doc_model.style or DocumentStyleModel()
+
+        pdf_bytes = None
+
+        # Strategy 1: Instant Typst rendering from the document model.
+        try:
+            pdf_bytes = compile_typst_to_pdf(render_document_model_to_typst(doc_model))
+            logger.info("Compiled PDF via Typst successfully (%d bytes)", len(pdf_bytes))
+        except TypstNotAvailableError:
+            logger.info("Typst binary unavailable; falling back to PyMuPDF layout engine")
+        except TypstPageBudgetExceeded as exc:
+            logger.warning("%s; falling back to PyMuPDF layout engine", exc)
+        except Exception as exc:  # noqa: BLE001 — fallback covers all Typst failures
+            logger.warning("Typst compilation failed (%s); falling back to PyMuPDF layout engine", exc)
+
+        # Strategy 2: High-fidelity layout engine using PyMuPDF Story
+        if not pdf_bytes:
+            try:
+                html = _render_document_model_to_html(doc_model)
+                buf = io.BytesIO()
+                writer = fitz.DocumentWriter(buf)
+                story = fitz.Story(html)
+                page_rect = fitz.Rect(0, 0, style.page_width_pt, style.page_height_pt)
+                content_rect = fitz.Rect(
+                    style.margin_left_pt,
+                    style.margin_top_pt,
+                    style.page_width_pt - style.margin_right_pt,
+                    style.page_height_pt - style.margin_bottom_pt,
+                )
+                more = True
+                while more:
+                    dev = writer.begin_page(page_rect)
+                    more, _ = story.place(content_rect)
+                    story.draw(dev)
+                    writer.end_page()
+                writer.close()
+                pdf_bytes = buf.getvalue()
+                logger.info("Compiled PDF via PyMuPDF layout engine (%d bytes)", len(pdf_bytes))
+            except Exception as story_exc:
+                logger.warning("PyMuPDF Story layout failed (%s); using plain textbox fallback", story_exc)
+                pdf_bytes = _render_plain_textbox_fallback(doc_model, style)
+                logger.info("Compiled PDF via plain textbox fallback (%d bytes)", len(pdf_bytes))
+
+        # 3. Visual Verification
+        ver_result = VisualVerificationEngine.verify(pdf_bytes)
+        if not ver_result.is_valid:
+            logger.warning("Visual verification detected issues: %s; running auto-adjust", ver_result.issues)
+            pdf_bytes, adjusted = VisualVerificationEngine.auto_adjust_if_needed(pdf_bytes)
+            ver_result = VisualVerificationEngine.verify(pdf_bytes)
+
+        return pdf_bytes, ver_result
+
+
+pdf_compiler = PdfCompiler()

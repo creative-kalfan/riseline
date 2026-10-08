@@ -1,0 +1,399 @@
+"""FastAPI application entrypoint for the CareerOS backend."""
+
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+
+class ExceptionEnvelopeMiddleware:
+    """Convert unhandled exceptions into the CareerOS JSON error envelope.
+
+    Starlette installs ``@app.exception_handler(Exception)`` into
+    ``ServerErrorMiddleware``, which sits OUTSIDE ``CORSMiddleware``. A bare
+    500 produced there has no CORS headers, so the browser misleadingly
+    reports the failure as "blocked by CORS policy" instead of showing the
+    real backend error. This middleware runs INSIDE the CORS layer, so its
+    responses always carry ``Access-Control-Allow-Origin``.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        try:
+            await self.app(scope, receive, send)
+        except Exception:
+            logger.exception(
+                "Unhandled exception on %s %s", scope.get("method"), scope.get("path")
+            )
+            response = JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": "internal_error",
+                        "message": "Internal server error. Please try again.",
+                    },
+                },
+            )
+            await response(scope, receive, send)
+
+from app.api.routes.jobs import router as jobs_router
+from app.api.routes.applications import router as applications_router
+from app.api.routes.recommendations import router as recommendations_router
+from app.api.routes.notifications import router as notifications_router
+from app.api.routes.notification_preferences import router as notification_preferences_router
+from app.api.routes.profile import router as profile_router
+from app.auth.router import router as auth_router
+
+from app.api.routes.export import router as export_router
+from app.api.routes.ats import router as ats_router
+from app.api.routes.resumes import router as resumes_router, resume_singular_router
+from app.api.routes.insights import router as insights_router
+from app.api.routes.versions import router as versions_router
+from app.api.routes.improvement import router as improvement_router
+from app.api.routes.optimization import router as optimization_router
+from app.api.routes.tailoring_evidence import router as tailoring_evidence_router
+from app.api.routes.interview_prep import router as interview_prep_router
+from app.api.routes.resume_templates import router as templates_router
+from app.api.routes.dashboard import router as dashboard_router
+from app.api.routes.copilot import router as copilot_router
+from app.api.routes.admin import router as admin_router
+from app.api.routes.outreach import router as outreach_router
+from app.api.routes.webhooks import router as webhooks_router
+from app.api.routes.market_demand import router as market_demand_router
+from app.api.routes.apply_kit import router as apply_kit_router
+from app.api.routes.referrals import router as referrals_router
+from app.api.routes.public_profiles import router as public_profiles_router
+from app.api.routes.internal_scheduler import router as internal_scheduler_router
+from app.auth.service import AuthError
+
+
+from app.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+
+def _init_sentry() -> None:
+    """Initialize Sentry SDK if SENTRY_DSN is configured."""
+    settings = get_settings()
+    if not settings.sentry_dsn:
+        logger.info("SENTRY_DSN not set, backend Sentry disabled")
+        return
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.fastapi import FastApiIntegration
+        from sentry_sdk.integrations.starlette import StarletteIntegration
+
+        sentry_sdk.init(
+            dsn=settings.sentry_dsn,
+            environment=settings.sentry_environment,
+            integrations=[
+                StarletteIntegration(transaction_style="endpoint"),
+                FastApiIntegration(transaction_style="endpoint"),
+            ],
+            traces_sample_rate=0.1,
+            send_default_pii=False,
+            before_send=_scrub_pii,
+        )
+        logger.info("Sentry initialized (env=%s)", settings.sentry_environment)
+    except ImportError:
+        logger.warning("sentry-sdk not installed, skipping Sentry init")
+
+
+def _scrub_pii(event: dict, hint: dict) -> dict:
+    """Remove sensitive fields from Sentry events."""
+    if "request" in event and "headers" in event["request"]:
+        headers = event["request"]["headers"]
+        sensitive = {"authorization", "cookie", "x-api-key"}
+        event["request"]["headers"] = {
+            k: "[Filtered]" if k.lower() in sensitive else v
+            for k, v in (headers.items() if isinstance(headers, dict) else [])
+        }
+    return event
+
+
+DEFAULT_CORS_ORIGINS = [
+    "https://careeros-frontend-three.vercel.app",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+]
+
+
+def _get_cors_origins() -> list[str]:
+    """Build CORS origins from env or fall back to canonical defaults.
+
+    Normalizes whitespace and trailing slashes so slight env var
+    discrepancies (e.g. trailing slash on Vercel domain) never cause
+    silent preflight 400 rejections.
+    """
+    settings = get_settings()
+    origins = [o.rstrip("/") for o in DEFAULT_CORS_ORIGINS]
+    if settings.cors_allowed_origins:
+        for origin in settings.cors_allowed_origins.split(","):
+            cleaned = origin.strip().rstrip("/")
+            if cleaned and cleaned not in origins:
+                origins.append(cleaned)
+    return origins
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Keep scheduled crawling in workers unless explicitly opted in."""
+    _init_sentry()
+    runner = None
+    settings = get_settings()
+    if (
+        settings.run_scheduler_in_web
+        and settings.legacy_apscheduler_enabled
+        and settings.crawl_scheduler_mode != "github"
+    ):
+        from app.services.jobs.scheduled_crawl_runner import ScheduledCrawlRunner
+        runner = ScheduledCrawlRunner()
+        runner.start()
+        logger.warning("Web process owns legacy APScheduler by explicit configuration")
+    else:
+        logger.info("Web lifespan: crawl scheduling disabled; use the worker entrypoint")
+    try:
+        yield
+    finally:
+        if runner is not None:
+            runner.shutdown()
+
+app = FastAPI(
+    title="CareerOS Backend (Python)",
+    version="0.1.0",
+    description="Feature-by-feature reimplementation of the TypeScript CareerOS backend.",
+    lifespan=lifespan,
+)
+
+# ExceptionEnvelopeMiddleware must be registered BEFORE CORSMiddleware so the
+# CORS layer wraps it (Starlette's last-added middleware is outermost) and its
+# error responses always receive CORS headers.
+app.add_middleware(ExceptionEnvelopeMiddleware)
+
+# Explicit, safe CORS allowlist. We never use wildcard `*` for methods/headers:
+# a wildcard combined with ``allow_credentials=True`` is rejected by browsers
+# and is too permissive anyway. We allow only the HTTP methods and request
+# headers the CareerOS frontend actually sends (JSON API + Bearer auth + Sentry distributed tracing).
+ALLOWED_CORS_METHODS = ["GET", "POST", "PATCH", "DELETE", "OPTIONS"]
+ALLOWED_CORS_HEADERS = [
+    "Authorization",
+    "Content-Type",
+    "sentry-trace",
+    "baggage",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_get_cors_origins(),
+    allow_credentials=True,
+    allow_methods=ALLOWED_CORS_METHODS,
+    allow_headers=ALLOWED_CORS_HEADERS,
+)
+
+
+@app.exception_handler(AuthError)
+async def auth_error_handler(request: Request, exc: AuthError) -> JSONResponse:
+    """Translate :class:`AuthError` into the standard CareerOS error envelope."""
+    code = {401: "unauthorized", 403: "forbidden"}.get(exc.status_code, str(exc.status_code))
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"success": False, "error": {"code": code, "message": exc.message}},
+    )
+
+
+def _normalize_exception_detail(status_code: int, detail: object) -> tuple[str, str, object | None]:
+    """Split an ``HTTPException`` detail into (code, message, details).
+
+    Route handlers may raise ``HTTPException(detail={"code": ..., "message": ...,
+    "issues"/"details": ...})`` for machine-readable errors. The error envelope
+    contract requires ``message`` to be a string, so dict details are split
+    into a short human-readable message plus structured details. Previously the
+    raw dict was assigned as ``message``, which clients could not render and
+    which violated the ``ErrorDetail`` schema (message: str).
+    """
+    if isinstance(detail, dict):
+        code = str(detail.get("code", status_code))
+        message = detail.get("message")
+        if not isinstance(message, str) or not message.strip():
+            issues = detail.get("issues")
+            if isinstance(issues, list) and issues:
+                message = "; ".join(str(i) for i in issues[:3])
+            else:
+                message = f"Request failed with status {status_code}."
+        details = detail.get("details", detail.get("issues"))
+        return code, message, details
+    if isinstance(detail, str) and detail.strip():
+        return str(status_code), detail, None
+    return str(status_code), f"Request failed with status {status_code}.", None
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Translate :class:`HTTPException` into the standard CareerOS error envelope."""
+    code, message, details = _normalize_exception_detail(exc.status_code, exc.detail)
+    error: dict[str, object] = {"code": code, "message": message}
+    if details is not None:
+        error["details"] = details
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "success": False,
+            "error": error,
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Convert unhandled exceptions into a JSON error envelope.
+
+    Without this, Starlette's ServerErrorMiddleware (which sits OUTSIDE
+    CORSMiddleware) returns a bare 500 with no CORS headers, and the browser
+    misleadingly reports the failure as "blocked by CORS policy". Returning
+    the envelope through the app's exception-handler path keeps the response
+    inside the CORS-covered middleware stack.
+    """
+    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "error": {
+                "code": "internal_error",
+                "message": "Internal server error. Please try again.",
+            },
+        },
+    )
+
+
+app.include_router(auth_router)
+app.include_router(jobs_router)
+app.include_router(applications_router)
+app.include_router(recommendations_router)
+app.include_router(notifications_router)
+app.include_router(notification_preferences_router)
+app.include_router(profile_router)
+app.include_router(export_router)
+app.include_router(ats_router)
+app.include_router(resumes_router)
+app.include_router(resume_singular_router)
+app.include_router(versions_router)
+app.include_router(improvement_router)
+app.include_router(optimization_router)
+app.include_router(tailoring_evidence_router)
+app.include_router(interview_prep_router)
+app.include_router(templates_router)
+app.include_router(dashboard_router)
+app.include_router(copilot_router)
+app.include_router(insights_router)
+app.include_router(outreach_router)
+app.include_router(webhooks_router)
+app.include_router(market_demand_router)
+app.include_router(apply_kit_router)
+app.include_router(referrals_router)
+app.include_router(public_profiles_router)
+app.include_router(admin_router)
+app.include_router(internal_scheduler_router)
+
+
+
+
+import time
+
+_READINESS_CACHE: dict[str, Any] = {"status": "ok", "timestamp": 0.0, "details": {}}
+_READINESS_TTL_SECONDS = 15.0
+
+
+@app.get("/health")
+@app.get("/health/live")
+async def health_live() -> dict[str, str]:
+    """Fast, zero-dependency liveness probe."""
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
+async def health_ready() -> JSONResponse:
+    """Readiness probe checking Supabase and Redis connectivity with short cache TTL."""
+    global _READINESS_CACHE
+    now = time.monotonic()
+    if now - _READINESS_CACHE["timestamp"] < _READINESS_TTL_SECONDS:
+        cached_status = _READINESS_CACHE["status"]
+        status_code = 200 if cached_status == "ok" else 503
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "status": cached_status,
+                "cached": True,
+                "details": _READINESS_CACHE["details"],
+            },
+        )
+
+    import asyncio
+    details: dict[str, str] = {}
+    is_ready = True
+
+    # 1. Supabase probe (short timeout, thread-isolated)
+    try:
+        from app.db.supabase import get_service_client
+        def _probe_db() -> bool:
+            client = get_service_client()
+            res = client.table("jobs").select("id").limit(1).execute()
+            return True
+        await asyncio.wait_for(asyncio.to_thread(_probe_db), timeout=3.0)
+        details["database"] = "ok"
+    except Exception as db_exc:
+        logger.warning("Readiness probe database error: %s", db_exc)
+        details["database"] = "degraded"
+        # We don't fail readiness completely if DB probe has transient network blip unless critical
+        details["database_error"] = str(type(db_exc).__name__)
+
+    # 2. Redis probe (short timeout)
+    try:
+        from app.workers.settings import get_redis_pool
+        redis = await asyncio.wait_for(get_redis_pool(), timeout=3.0)
+        await asyncio.wait_for(redis.ping(), timeout=2.0)
+        details["redis"] = "ok"
+    except Exception as redis_exc:
+        logger.warning("Readiness probe redis error: %s", redis_exc)
+        details["redis"] = "error"
+        is_ready = False
+
+    status_str = "ok" if is_ready else "unavailable"
+    _READINESS_CACHE = {
+        "status": status_str,
+        "timestamp": now,
+        "details": details,
+    }
+
+    return JSONResponse(
+        status_code=200 if is_ready else 503,
+        content={
+            "status": status_str,
+            "cached": False,
+            "details": details,
+        },
+    )
+
+
+@app.get("/version")
+async def version() -> dict[str, str]:
+    """Version probe to verify deployment."""
+    import os
+    commit = os.environ.get("RENDER_GIT_COMMIT") or os.environ.get("GIT_COMMIT") or "766f536"
+    return {"version": "studio-qa-v2", "commit": commit[:7] if commit else "766f536"}
+

@@ -1,0 +1,243 @@
+"""Scheduled crawl runner: enqueues per-source crawl jobs on a schedule.
+
+Cadence is provider-specific and configurable via env:
+
+    YC (priority 1):          YC_CRAWL_INTERVAL_HOURS          (default 24h)
+    Firecrawl (priority 2):   FIRECRAWL_CRAWL_INTERVAL_HOURS   (default 24h)
+    ATS boards (priority 3):  ATS_CRAWL_INTERVAL_HOURS         (default 24h)
+    Aggregator (priority 4):  AGGREGATOR_CRAWL_INTERVAL_HOURS  (default 24h)
+    Legacy override:          CRAWL_INTERVAL_HOURS (wins over all the above)
+
+Targets come from ``app.crawlers.crawl_registry`` — add companies there, not
+here. Provider enable flags: JOB_CRAWL_ENABLED (master), YC_CRAWL_ENABLED,
+FIRECRAWL_ENABLED.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Awaitable, Callable, Optional
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+
+from app.crawlers.crawl_registry import all_targets, targets_for_provider
+from app.services.jobs.job_ingestion_service import JobIngestionService
+
+logger = logging.getLogger(__name__)
+
+# Legacy default kept for backwards compatibility (used by main.py import).
+DEFAULT_INTERVAL_HOURS = 6
+
+# Backwards-compatible flat view of the registry for existing consumers/tests.
+CRAWL_TARGETS: list[tuple[str, str]] = [(t.source, t.slug) for t in all_targets()]
+
+# Provider family -> (enabled attr, interval attr) on Settings.
+_PROVIDER_CONFIG = {
+    "yc": ("yc_crawl_enabled", "yc_crawl_interval_hours"),
+    "firecrawl": ("firecrawl_enabled", "firecrawl_crawl_interval_hours"),
+    "ats": (None, "ats_crawl_interval_hours"),
+    "aggregator": (None, "aggregator_crawl_interval_hours"),
+}
+
+
+class ScheduledCrawlRunner:
+    """Owns the APScheduler instance and the recurring crawl enqueue pass."""
+
+    def __init__(
+        self,
+        ingestion_service: Optional[JobIngestionService] = None,
+        interval_hours: Optional[float] = None,
+        enqueue_fn: Optional[Callable[[str, str], Awaitable[None]]] = None,
+    ) -> None:
+        # interval_hours=None (default) means "use the per-provider settings
+        # cadence" (24h each; CRAWL_INTERVAL_HOURS legacy override wins when
+        # set). A previous default of 6 silently shadowed every per-provider
+        # interval via _interval_for(), running all 4 provider passes every
+        # 6h (56 crawl enqueues/day instead of the intended 14/day).
+        self.ingestion_service = ingestion_service or JobIngestionService()
+        self.interval_hours = interval_hours
+        self._enqueue_fn = enqueue_fn
+        self._scheduler: Optional[AsyncIOScheduler] = None
+
+    async def _enqueue_crawl(
+        self,
+        source: str,
+        slug: str,
+        _defer_by: Optional[int] = None,
+        _defer_until: Optional[Any] = None,
+        _defer: Optional[int] = None,
+    ) -> None:
+        """Enqueue a single crawl job via the ARQ dispatcher (Redis-locked)."""
+        if self._enqueue_fn is not None:
+            await self._enqueue_fn(source, slug)
+            return
+        from app.workers.dispatcher import enqueue_crawl_company
+
+        effective_defer_by = _defer_by if _defer_by is not None else _defer
+        job_id = await enqueue_crawl_company(source, slug, _defer_by=effective_defer_by)
+        if job_id is None:
+            logger.info("dispatcher skipped or returned no job id for %s:%s", source, slug)
+
+    async def run_once(self) -> dict[str, str]:
+        """Enqueue one crawl job per enabled target; failures are isolated."""
+        targets = self._enabled_targets()
+        logger.info("Scheduled crawl: enqueueing %d crawl targets", len(targets))
+        results: dict[str, str] = {}
+        for source, slug in targets:
+            key = f"{source}:{slug}"
+            try:
+                await self._enqueue_crawl(source, slug)
+                results[key] = "enqueued"
+            except Exception as exc:
+                logger.warning("Scheduled crawl: enqueue failed for %s: %s", key, exc)
+                results[key] = f"error: {exc}"
+        return results
+
+    def _enabled_targets(self) -> list[tuple[str, str]]:
+        """Registry targets filtered by provider enable flags from settings."""
+        from app.config import get_settings
+
+        settings = get_settings()
+        if not settings.job_crawl_enabled:
+            return []
+        out: list[tuple[str, str]] = []
+        for target in all_targets():
+            cfg = _PROVIDER_CONFIG.get(target.provider)
+            if cfg and cfg[0] is not None and not getattr(settings, cfg[0]):
+                continue
+            if target.source == "jobspy" and not getattr(settings, "jobspy_enabled", True):
+                continue
+            out.append((target.source, target.slug))
+        return out
+
+    async def run_provider_pass(self, provider: str, max_targets_per_pass: Optional[int] = None) -> dict[str, str]:
+        """Enqueue crawl jobs for one provider family (e.g. 'yc', 'firecrawl').
+
+        Tiered budget safety:
+          - P0 targets: run on EVERY pass (high-impact India hiring).
+          - P1 / P2 targets: staggered by day-of-year rotation (batch of 15 per pass)
+            so 100+ targets never overwhelm Redis, ARQ, or upstream rate limits.
+        """
+        from datetime import datetime, timezone
+
+        enabled = set(self._enabled_targets())
+        provider_targets = [
+            t for t in targets_for_provider(provider)
+            if (t.source, t.slug) in enabled
+        ]
+
+        # Partition by tier
+        p0 = [t for t in provider_targets if getattr(t, "tier", "P1") == "P0"]
+        others = [t for t in provider_targets if getattr(t, "tier", "P1") != "P0"]
+
+        selected = list(p0)
+        if others:
+            # Deterministic day-of-year slice
+            batch_limit = max_targets_per_pass or 15
+            yday = datetime.now(timezone.utc).timetuple().tm_yday
+            offset = (yday * batch_limit) % len(others)
+            for i in range(min(batch_limit, len(others))):
+                selected.append(others[(offset + i) % len(others)])
+
+        targets = [(t.source, t.slug) for t in selected]
+        logger.info("Scheduled crawl pass (%s): enqueueing %d targets (P0=%d, rotated=%d)",
+                    provider, len(targets), len(p0), len(targets) - len(p0))
+        from app.config import get_settings
+
+        stagger_s = get_settings().crawl_stagger_seconds
+        results: dict[str, str] = {}
+        for i, (source, slug) in enumerate(targets):
+            key = f"{source}:{slug}"
+            defer_s = int(i * stagger_s) if (stagger_s > 0 and i > 0) else None
+            try:
+                try:
+                    if defer_s:
+                        try:
+                            await self._enqueue_crawl(source, slug, _defer_by=defer_s)
+                        except TypeError:
+                            await self._enqueue_crawl(source, slug, defer_s)
+                    else:
+                        await self._enqueue_crawl(source, slug)
+                except TypeError:
+                    await self._enqueue_crawl(source, slug)
+                results[key] = "enqueued"
+            except Exception as exc:
+                logger.warning(
+                    "Scheduled crawl pass (%s): enqueue failed for %s: %s", provider, key, exc
+                )
+                results[key] = f"error: {exc}"
+        return results
+
+    def _interval_for(self, provider: str) -> float:
+        """Resolve the effective interval (hours) for a provider family."""
+        if self.interval_hours is not None:
+            return self.interval_hours
+        from app.config import get_settings
+
+        settings = get_settings()
+        if settings.crawl_interval_hours is not None:
+            return settings.crawl_interval_hours
+        return float(getattr(settings, _PROVIDER_CONFIG[provider][1]))
+
+    def start(self) -> None:
+        """Start the background scheduler (idempotent).
+
+        One APScheduler job per provider family so each cadence is independent:
+        a slow Firecrawl pass never delays YC discovery.
+
+        Each provider's first run is staggered immediately after start
+        (not after a full IntervalTrigger period). Previously the first
+        fire waited 24h, so short-lived Render processes that sleep/restart
+        more often than that never ran a crawl at all — the root cause of
+        zero fresh ``posted_at`` inventory in production.
+        """
+        if self._scheduler is not None:
+            return
+        from datetime import datetime, timedelta, timezone
+
+        from app.config import get_settings
+
+        settings = get_settings()
+        if not settings.job_crawl_enabled:
+            logger.info("Scheduled crawl runner disabled (JOB_CRAWL_ENABLED=false)")
+            return
+
+        self._scheduler = AsyncIOScheduler()
+        # Stagger first runs so providers do not all enqueue at once,
+        # but every provider gets a crawl shortly after process start.
+        first_run = datetime.now(timezone.utc) + timedelta(seconds=30)
+        for provider in _PROVIDER_CONFIG:
+            if not targets_for_provider(provider):
+                continue
+            cfg = _PROVIDER_CONFIG[provider]
+            if cfg[0] is not None and not getattr(settings, cfg[0]):
+                logger.info("Scheduled crawl: provider %s disabled", provider)
+                continue
+            hours = self._interval_for(provider)
+            provider_first_run = first_run + timedelta(
+                seconds=list(_PROVIDER_CONFIG).index(provider) * 15
+            )
+            self._scheduler.add_job(
+                self.run_provider_pass,
+                trigger=IntervalTrigger(hours=hours, start_date=first_run),
+                args=[provider],
+                id=f"scheduled_crawl_{provider}",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+                next_run_time=provider_first_run,
+            )
+            logger.info(
+                "Scheduled crawl: %s pass every %s hours, first run at %s (%d targets)",
+                provider, hours, provider_first_run.isoformat(),
+                len(targets_for_provider(provider)),
+            )
+        self._scheduler.start()
+
+    def shutdown(self) -> None:
+        """Stop the background scheduler (idempotent)."""
+        if self._scheduler is not None:
+            self._scheduler.shutdown(wait=False)
+            self._scheduler = None
+            logger.info("ScheduledCrawlRunner stopped")

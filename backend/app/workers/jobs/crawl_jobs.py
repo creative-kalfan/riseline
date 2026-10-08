@@ -1,0 +1,819 @@
+"""ARQ background jobs for job crawling."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import threading
+import time
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from app.services.jobs.job_ingestion_service import JobIngestionService
+from app.workers.logging import JobLogger
+from app.workers.registry import WorkloadClass, register_job
+
+logger = logging.getLogger(__name__)
+
+
+def _get_process_rss_mb() -> float:
+    """Return process RSS memory in megabytes for telemetry."""
+    try:
+        import psutil
+        return psutil.Process().memory_info().rss / (1024.0 * 1024.0)
+    except Exception:
+        return 0.0
+
+# Default Adzuna query when the scheduled target's "slug" is empty.
+DEFAULT_ADZUNA_QUERY = "software engineer"
+
+# Redis key prefix for last-crawl status records (observability).
+CRAWL_STATUS_PREFIX = "crawl_status"
+CRAWL_STATUS_TTL_SECONDS = 7 * 24 * 3600
+
+# Active crawl-job gauge (single event loop: plain int is sufficient).
+# Surfaced in start/complete/fail logs so queue depth vs worker capacity is
+# observable without a new table or metric pipeline.
+_ACTIVE_CRAWLS = 0
+
+
+def active_crawl_count() -> int:
+    """Return the number of crawl jobs currently executing on this worker."""
+    return _ACTIVE_CRAWLS
+
+
+# Provider families whose discovery return is a COMPLETE inventory of that
+# source (an ATS board, the YC board, or one company's careers page). For
+# these, "not seen in this crawl" is strong evidence the posting disappeared,
+# so the not-seen reconciliation deactivates it (Firecrawl is additionally
+# scoped to the crawled careers URL).
+_COMPLETE_INVENTORY_SOURCES = frozenset(
+    {"greenhouse", "ashby", "lever", "smartrecruiters", "ycombinator", "workday", "icims", "firecrawl"}
+)
+
+# Query-based providers (Adzuna search, JobSpy Naukri/LinkedIn): each crawl
+# exercises a bounded ROTATION of queries, never the full source inventory.
+# A job absent from today's query subset is NOT evidence it disappeared —
+# it simply was not requested. Applying not-seen deactivation here would
+# cull otherwise-fresh jobs (observed Adzuna churn: 1066 inactive, 0 active).
+# The age-based stale window (JOB_STALE_AFTER_DAYS) remains the deactivation
+# boundary for these providers.
+_QUERY_BASED_SOURCES = frozenset({"adzuna", "jobspy", "instahyre", "hirist", "naukri"})
+
+
+def _uses_complete_inventory(source: str) -> bool:
+    """True when a crawl of this source sees the whole postings inventory.
+
+    ATS boards / YC / Firecrawl careers pages: yes (Firecrawl is scoped to
+    the crawled careers URL). Query-based aggregators (Adzuna/JobSpy): no —
+    not-seen never implies gone for a bounded query rotation.
+    """
+    return source in _COMPLETE_INVENTORY_SOURCES
+
+
+def _india_only_for(source: str, slug: str) -> bool:
+    """Registry-driven geographic scope for a crawl target.
+
+    Stripe is the only greenhouse board and is registered with
+    ``india_only=True``; since not-seen deactivation is scoped to
+    ``source_platform="greenhouse"`` (Stripe rows only), foreign Stripe rows
+    drain naturally after the next successful crawl. Unknown slugs default
+    to False so ad-hoc crawls keep full-board behavior.
+    """
+    try:
+        from app.crawlers.crawl_registry import all_targets
+
+        return next(
+            (t.india_only for t in all_targets() if t.source == source and t.slug == slug),
+            False,
+        )
+    except Exception:
+        return False
+
+
+async def _record_crawl_status(
+    source: str,
+    slug: str,
+    payload: dict[str, Any],
+) -> None:
+    """Best-effort: persist the last crawl run summary in Redis (7-day TTL).
+
+    Enables the ``/dev/arq/crawl-status`` endpoint (and structured logs) to
+    answer "when did this source last crawl successfully?" without a new
+    database table.
+    """
+    try:
+        from app.workers.settings import get_redis_pool
+
+        redis = await get_redis_pool()
+        key = f"{CRAWL_STATUS_PREFIX}:{source}:{slug}"
+        await redis.set(key, json.dumps(payload, default=str), ex=CRAWL_STATUS_TTL_SECONDS)
+    except Exception as exc:  # non-blocking observability
+        logger.warning("crawl-status write failed (non-blocking): %s", exc)
+
+
+def _resolve_company_scope(source: str, slug: str) -> Optional[str]:
+    """Find canonical company name for scoping ATS deactivation."""
+    if not slug:
+        return None
+    try:
+        from app.crawlers.crawl_registry import all_targets
+
+        target = next((t for t in all_targets() if t.source == source and t.slug == slug), None)
+        if target and target.company:
+            return target.company
+    except Exception:
+        pass
+    if "|" in slug:
+        company_part, _, _ = slug.partition("|")
+        if company_part:
+            return company_part
+    return slug.replace("-", " ").title()
+
+
+def _deactivate_after_success(
+    ingestion: Any,
+    source: str,
+    slug: str,
+    crawl_started_at: str,
+    max_age_days: int,
+    cancel_event: Optional[threading.Event] = None,
+    timeout_seconds: float = 45.0,
+    already_gated: bool = False,
+    miss_threshold: int = 2,
+    crawl_run_id: Optional[str] = None,
+) -> tuple[int, int, int, int]:
+    """Synchronous post-ingestion deactivation; runs in a worker thread.
+
+    Ordering is load-bearing and preserved exactly: not-seen reconciliation
+    first (complete-inventory sources only), then the age-based staleness
+    backstop for all providers. Raises on DB errors so the caller keeps the
+    existing best-effort warning behavior. Supports cancellation tokens and
+    timeout bounds.
+
+    Ownership rule: the production caller holds ``async_persistence_slot``
+    and passes ``already_gated=True`` so the pair runs via
+    ``run_gated_persistence`` WITHOUT re-acquiring the sync capacity
+    semaphore (single-gate). Direct/legacy callers keep the default
+    ``already_gated=False`` and remain protected by ``call_serialized``.
+    Thread-safety in both cases rests on thread-local Supabase clients.
+    """
+    from app.db.supabase import call_serialized, run_gated_persistence
+
+    not_seen_kwargs: dict[str, Any] = {"miss_threshold": miss_threshold, "crawl_run_id": crawl_run_id}
+    stale_kwargs: dict[str, Any] = {}
+
+    if source == "firecrawl":
+        company, _, careers_url_scope = slug.partition("|")
+        if careers_url_scope:
+            not_seen_kwargs["careers_url"] = careers_url_scope
+            stale_kwargs["careers_url"] = careers_url_scope
+        if company:
+            not_seen_kwargs["company"] = company
+            stale_kwargs["company"] = company
+        if slug:
+            not_seen_kwargs["slug"] = slug
+            stale_kwargs["slug"] = slug
+    elif source in ("ashby", "greenhouse", "lever", "smartrecruiters"):
+        # Single-board ATS sources: scope reconciliation to this company & slug
+        if slug:
+            not_seen_kwargs["slug"] = slug
+            stale_kwargs["slug"] = slug
+        company = _resolve_company_scope(source, slug)
+        if company:
+            not_seen_kwargs["company"] = company
+            stale_kwargs["company"] = company
+
+    def _run() -> tuple[int, int, int, int]:
+        not_seen_start = time.monotonic()
+        if _uses_complete_inventory(source):
+            not_seen = ingestion.job_repository.deactivate_not_seen_since(
+                source_platform=source,
+                since_iso=crawl_started_at,
+                cancel_event=cancel_event,
+                **not_seen_kwargs,
+            )
+        else:
+            logger.info(
+                "Skipping not-seen deactivation for %s (query-based provider: "
+                "today's bounded query rotation is not the full inventory)",
+                source,
+            )
+            not_seen = 0
+        not_seen_ms = int((time.monotonic() - not_seen_start) * 1000)
+
+        stale_start = time.monotonic()
+        stale = ingestion.job_repository.deactivate_stale_jobs(
+            source_platform=source,
+            max_age_days=max_age_days,
+            cancel_event=cancel_event,
+            **stale_kwargs,
+        )
+        stale_ms = int((time.monotonic() - stale_start) * 1000)
+        return not_seen, stale, not_seen_ms, stale_ms
+
+    if already_gated:
+        return run_gated_persistence(
+            _run, cancel_event=cancel_event, timeout_seconds=timeout_seconds
+        )
+    return call_serialized(
+        _run, cancel_event=cancel_event, timeout_seconds=timeout_seconds
+    )
+
+
+async def _dispatch_ingest(
+    fn: Any, *args: Any, cancel_event: Optional[threading.Event] = None, **kwargs: Any
+) -> Any:
+    """Invoke an ingestion method, forwarding cancel_event and kwargs if accepted."""
+    call_kwargs = dict(kwargs)
+    if cancel_event is not None:
+        call_kwargs["cancel_event"] = cancel_event
+    try:
+        return await fn(*args, **call_kwargs)
+    except TypeError:
+        try:
+            return await fn(*args, **kwargs)
+        except TypeError:
+            return await fn(*args)
+
+
+@register_job(
+    "crawl_company_job",
+    timeout=300,
+    max_tries=3,
+    retry=True,
+    description="Crawl jobs for a single ATS source/company.",
+    workload_class=WorkloadClass.CRAWL,
+)
+async def crawl_company_job(ctx: dict[str, Any], source: str, slug: str) -> dict[str, Any]:
+    """Crawl jobs for a single ATS source/company.
+
+    Payload:
+        {
+            "source": "ashby" | "greenhouse" | "smartrecruiters" | "lever" | "adzuna" | "jobspy" | "ycombinator" | "firecrawl",
+            "slug": "notion"  # for adzuna/jobspy: the search query (optional)
+        }
+
+    Reliability behavior:
+        - Failures propagate to ARQ for retry (max_tries=2); nothing is
+          deactivated or deleted on failure.
+        - After a SUCCESSFUL persistence pass, jobs from this source that have
+          not been seen for a full freshness window are deactivated
+          (NO LONGER SEEN -> INACTIVE; never deleted). Deactivation is scoped
+          to this source so one source cannot deactivate another's jobs.
+        - One JobIngested domain event is published per successful run via the
+          in-process event bus. Handler failures are isolated by the bus and
+          never fail the crawl.
+    """
+    global _ACTIVE_CRAWLS
+    job_id: str = ctx.get("job_id", "unknown")
+    job_logger = JobLogger(job_id=job_id, job_type="crawl_company", source=source, slug=slug)
+    job_start = time.monotonic()
+    # Wall-clock crawl start: the staleness reconciliation boundary. Jobs
+    # last seen BEFORE this instant were not observed by this crawl.
+    crawl_started_at = datetime.now(timezone.utc).isoformat()
+    cancel_event = threading.Event()
+
+    current_phase = "init"
+    provider_ms = 0
+    deactivated_not_seen = 0
+    deactivated = 0
+    deactivate_not_seen_ms = 0
+    deactivate_stale_ms = 0
+    deactivation_total_ms = 0
+    result: dict[str, Any] = {}
+
+    _ACTIVE_CRAWLS += 1
+    job_logger.started()
+    logger.info(
+        "crawl started active_crawls=%d source=%s slug=%s threads=%d rss_mb=%.1f",
+        _ACTIVE_CRAWLS,
+        source,
+        slug,
+        threading.active_count(),
+        _get_process_rss_mb(),
+    )
+
+    ingestion = JobIngestionService()
+
+    try:
+        current_phase = "provider_discovery"
+        provider_start = time.monotonic()
+        if source == "ashby":
+            result = await _dispatch_ingest(ingestion.ingest_ashby_jobs, slug, cancel_event=cancel_event)
+        elif source == "greenhouse":
+            result = await _dispatch_ingest(
+                ingestion.ingest_greenhouse_jobs,
+                slug,
+                india_only=_india_only_for(source, slug),
+                cancel_event=cancel_event,
+            )
+        elif source == "smartrecruiters":
+            result = await _dispatch_ingest(
+                ingestion.ingest_smartrecruiters_jobs, slug, cancel_event=cancel_event
+            )
+        elif source == "lever":
+            result = await _dispatch_ingest(
+                ingestion.ingest_lever_jobs, slug, cancel_event=cancel_event
+            )
+        elif source == "workday":
+            result = await _dispatch_ingest(
+                ingestion.ingest_workday_jobs, slug, cancel_event=cancel_event
+            )
+        elif source == "adzuna":
+            result = await _dispatch_ingest(
+                ingestion.ingest_adzuna_jobs,
+                slug or DEFAULT_ADZUNA_QUERY,
+            )
+        elif source == "jobspy":
+            result = await _dispatch_ingest(
+                ingestion.ingest_jobspy_scheduled,
+                extra_query=slug or None,
+            )
+        elif source == "ycombinator":
+            result = await _dispatch_ingest(
+                ingestion.ingest_ycombinator_jobs,
+                cancel_event=cancel_event,
+            )
+        elif source == "instahyre":
+            result = await _dispatch_ingest(
+                ingestion.ingest_instahyre_jobs,
+                query=slug or "software engineer",
+                cancel_event=cancel_event,
+                source=source,
+                slug=slug,
+            )
+        elif source == "hirist":
+            result = await _dispatch_ingest(
+                ingestion.ingest_hirist_jobs,
+                query=slug or "software engineer",
+                cancel_event=cancel_event,
+                source=source,
+                slug=slug,
+            )
+        elif source == "naukri":
+            result = await _dispatch_ingest(
+                ingestion.ingest_naukri_jobs,
+                query=slug or "software-engineer",
+                cancel_event=cancel_event,
+                source=source,
+                slug=slug,
+            )
+        elif source == "firecrawl":
+            company, _, careers_url = slug.partition("|")
+            if not careers_url:
+                raise ValueError("firecrawl crawl requires slug '<company>|<careers_url>'")
+            result = await _dispatch_ingest(
+                ingestion.ingest_generic_career_page,
+                careers_url=careers_url,
+                company=company or None,
+                cancel_event=cancel_event,
+            )
+        else:
+            raise ValueError(f"Unknown source: {source}")
+
+        provider_ms = int((time.monotonic() - provider_start) * 1000)
+        inserted_ids = getattr(ingestion.job_repository, "last_inserted_ids", [])
+        if not isinstance(inserted_ids, list):
+            inserted_ids = []
+        if not inserted_ids:
+            inserted_ids = result.get("inserted_ids", [])
+        if not isinstance(inserted_ids, list):
+            inserted_ids = []
+        content_hash = getattr(ingestion.job_repository, "last_content_hash", None)
+        logger.info(
+            "crawl provider_ms=%d phase=discover_normalize source=%s slug=%s "
+            "discovered=%d",
+            provider_ms, source, slug, result.get("discovered", 0),
+        )
+
+        current_phase = "deactivation"
+        deact_async_wait_ms = 0
+        deact_async_hold_ms = 0
+        deact_to_thread_ms = 0
+        
+        discovered = result.get("discovered", 0)
+        try:
+            prev_active_query = (
+                ingestion.job_repository._client.table("jobs")
+                .select("id", count="exact")
+                .eq("is_active", True)
+                .eq("source_platform", source)
+            )
+            if slug and source in ("ashby", "greenhouse", "lever", "smartrecruiters", "workday", "firecrawl"):
+                prev_active_query = prev_active_query.eq("crawl_target_slug", slug)
+            elif source == "firecrawl":
+                comp_part, _, url_part = slug.partition("|")
+                if comp_part:
+                    prev_active_query = prev_active_query.ilike("company", comp_part)
+                if url_part:
+                    prev_active_query = prev_active_query.eq("careers_url", url_part)
+            elif source in ("ashby", "greenhouse", "lever", "smartrecruiters", "workday"):
+                comp = _resolve_company_scope(source, slug)
+                if comp:
+                    prev_active_query = prev_active_query.ilike("company", comp)
+            prev_active_res = prev_active_query.execute()
+            count_val = getattr(prev_active_res, "count", 0)
+            prev_active_count = int(count_val) if isinstance(count_val, (int, float)) else 0
+            if prev_active_count == 0 and slug and source in ("ashby", "greenhouse", "lever", "smartrecruiters", "workday", "firecrawl"):
+                # Fallback to legacy company/url scope if crawl_target_slug has no matches (un-backfilled rows)
+                fallback_query = (
+                    ingestion.job_repository._client.table("jobs")
+                    .select("id", count="exact")
+                    .eq("is_active", True)
+                    .eq("source_platform", source)
+                )
+                if source == "firecrawl":
+                    comp_part, _, url_part = slug.partition("|")
+                    if comp_part:
+                        fallback_query = fallback_query.ilike("company", comp_part)
+                    if url_part:
+                        fallback_query = fallback_query.eq("careers_url", url_part)
+                else:
+                    comp = _resolve_company_scope(source, slug)
+                    if comp:
+                        fallback_query = fallback_query.ilike("company", comp)
+                fallback_res = fallback_query.execute()
+                fallback_val = getattr(fallback_res, "count", 0)
+                if isinstance(fallback_val, (int, float)) and fallback_val > 0:
+                    prev_active_count = int(fallback_val)
+        except Exception:
+            prev_active_count = 0
+            
+        from app.config import get_settings
+        anomaly_ratio = get_settings().crawl_anomaly_ratio
+        is_suspicious_empty = False
+        anomaly_reason = None
+        if discovered == 0 and prev_active_count > 0:
+            is_suspicious_empty = True
+            anomaly_reason = f"discovered 0 jobs while previously active count was {prev_active_count}"
+        elif prev_active_count > 10 and discovered < (prev_active_count * anomaly_ratio):
+            is_suspicious_empty = True
+            anomaly_reason = f"discovered {discovered} jobs which is < {int(anomaly_ratio * 100)}% of previous {prev_active_count}"
+
+        if is_suspicious_empty:
+            logger.warning("Anomaly detected for %s:%s (%s). Skipping deactivation.", source, slug, anomaly_reason)
+            result["status"] = "suspicious_empty" if discovered == 0 else "anomaly"
+            result["anomaly_reason"] = anomaly_reason
+
+            # Raise SLO alert hook
+            alert_msg = f"Crawl anomaly detected for {source}:{slug}: {anomaly_reason}"
+            try:
+                import sentry_sdk
+                sentry_sdk.capture_message(alert_msg, level="warning")
+            except Exception:
+                logger.error(alert_msg)
+            try:
+                if get_settings().alert_webhook_url:
+                    from app.services.jobs.crawl_dispatcher import _post_webhook
+                    await _post_webhook(get_settings().alert_webhook_url, {"message": alert_msg, "source": source, "slug": slug})
+            except Exception as hook_exc:
+                logger.warning("Failed to post crawl anomaly alert: %s", hook_exc)
+        else:
+            try:
+                from app.config import get_settings
+                from app.db.supabase import async_persistence_slot
+
+                max_age_days = get_settings().job_stale_after_days
+                deact_start = time.monotonic()
+                deact_async_acquire_start = time.monotonic()
+                async with async_persistence_slot(cancel_event=cancel_event, timeout_seconds=45.0):
+                    deact_async_wait_ms = int((time.monotonic() - deact_async_acquire_start) * 1000)
+                    deact_hold_start = time.monotonic()
+                    deact_thread_start = time.monotonic()
+                    deactivated_not_seen, deactivated, deactivate_not_seen_ms, deactivate_stale_ms = await asyncio.to_thread(
+                        _deactivate_after_success,
+                        ingestion,
+                        source,
+                        slug,
+                        crawl_started_at,
+                        max_age_days,
+                        cancel_event,
+                        45.0,
+                        True,
+                        get_settings().job_miss_threshold,
+                    )
+                    deact_to_thread_ms = int((time.monotonic() - deact_thread_start) * 1000)
+                    deact_async_hold_ms = int((time.monotonic() - deact_hold_start) * 1000)
+                deactivation_total_ms = int((time.monotonic() - deact_start) * 1000)
+            except Exception as exc:
+                logger.warning(
+                    "Stale deactivation skipped (non-blocking): source=%s error=%s", source, exc
+                )
+
+        from app.db.supabase import persistence_gate_snapshot
+        gate = persistence_gate_snapshot()
+        
+        logger.info(
+            "CRAWL_FINISHED phase=completed source=%s slug=%s job_try=%d fetch_ms=%d persist_wait_ms=%d persist_hold_ms=%d total_ms=%d path=%s discovered=%d inserted=%d updated=%d unchanged=%d deactivated=%d rss_mb=%.1f",
+            source, slug, ctx.get("job_try", 1), provider_ms, result.get("async_wait_ms", 0), result.get("async_hold_ms", 0), int((time.monotonic() - job_start) * 1000), result.get("path", "legacy"), discovered, result.get("inserted", 0), result.get("updated", 0), result.get("unchanged", 0), deactivated_not_seen + deactivated, _get_process_rss_mb()
+        )
+
+        from app.services.jobs.crawl_dispatcher import complete_target
+        await complete_target(
+            source, slug, True,
+            job_count=int(discovered),
+            content_hash=content_hash,
+        )
+
+        current_phase = "event_dispatch"
+        try:
+            from app.events import JobIngested, get_event_bus
+            for external_id in inserted_ids:
+                await get_event_bus().publish(JobIngested(
+                    aggregate_id=f"{source}:{external_id}",
+                    source_platform=source,
+                    jobs_processed=1,
+                    metadata={"external_job_id": external_id, "inserted": True},
+                ))
+            if hasattr(ingestion.job_repository, "last_analysis_ids"):
+                analysis_ids = ingestion.job_repository.last_analysis_ids
+            else:
+                analysis_ids = inserted_ids
+
+            if analysis_ids:
+                try:
+                    from app.workers.dispatcher import _get_redis, enqueue
+                    from app.config import get_settings
+                    import hashlib
+                    import random
+
+                    settings = get_settings()
+                    backlog_threshold = int(settings.analysis_backlog_threshold)
+
+                    # Backlog protection: check analysis queue depth before enqueueing more
+                    skip_enqueue = False
+                    try:
+                        redis = await _get_redis()
+                        current_depth = await redis.zcard(settings.analysis_queue_name)
+                        if current_depth is not None and current_depth >= backlog_threshold:
+                            logger.info(
+                                "ANALYSIS_BACKPRESSURE: analysis queue depth=%d >= threshold=%d; deferring %d analysis tasks to durable DB recovery",
+                                current_depth,
+                                backlog_threshold,
+                                len(analysis_ids),
+                            )
+                            skip_enqueue = True
+                    except Exception as redis_exc:
+                        logger.debug("Failed to check analysis queue depth: %s", redis_exc)
+
+                    if not skip_enqueue:
+                        max_cap = max(1, int(settings.analysis_max_ids_per_crawl))
+                        chunk_size = max(1, int(settings.analysis_batch_chunk_size))
+                        capped_ids = analysis_ids[:max_cap]
+
+                        for chunk_idx, i in enumerate(range(0, len(capped_ids), chunk_size)):
+                            chunk = capped_ids[i:i + chunk_size]
+                            chunk_hash = hashlib.sha1(":".join(chunk).encode()).hexdigest()[:10]
+                            batch_job_id = f"analyze_batch:{source}:{slug}:{chunk_idx}:{chunk_hash}"
+                            jitter_sec = int(chunk_idx * 3 + random.uniform(1, 5))
+                            await enqueue(
+                                "analyze_jobs_batch",
+                                chunk,
+                                _job_id=batch_job_id,
+                                _defer_by=jitter_sec,
+                            )
+                except Exception as exc:
+                    logger.warning("batch analysis enqueue failed (%s)", type(exc).__name__)
+            if not inserted_ids and int(result.get("inserted", 0)) > 0:
+                # Compatibility for alternate repositories without ID side-channel.
+                await get_event_bus().publish(JobIngested(
+                    aggregate_id=f"{source}:{slug}", source_platform=source,
+                    jobs_processed=int(result.get("inserted", 0)),
+                    metadata={"inserted": True, "identity_unavailable": True},
+                ))
+
+            # Bounded duplicate clustering & repost churn check on inserted jobs
+            if inserted_ids:
+                try:
+                    from app.services.jobs.job_cluster_service import JobClusterService
+                    cluster_service = JobClusterService()
+                    for ext_id in inserted_ids[:50]:  # bounded batch
+                        job_row = ingestion.job_repository.get_job_by_identity(ext_id, source)
+                        if job_row:
+                            cluster_service.cluster_job(job_row.get("id") or ext_id, job_row)
+                except Exception as cluster_exc:
+                    logger.warning("Post-ingestion clustering failed (non-blocking): %s", cluster_exc)
+        except Exception as exc:
+            logger.warning("Event Bus publish failed (non-blocking): %s", exc)
+
+        current_phase = "completed"
+        duration_ms = int((time.monotonic() - job_start) * 1000)
+        job_logger.completed(
+            duration_ms=duration_ms,
+            discovered=result.get("discovered", 0),
+            inserted=result.get("inserted", 0),
+            updated=result.get("updated", 0),
+            unchanged=result.get("unchanged", 0),
+            deduplicated=result.get("deduplicated", 0),
+            skipped=result.get("skipped", 0),
+            deactivated=deactivated + deactivated_not_seen,
+            provider_ms=provider_ms,
+            active_crawls=max(0, _ACTIVE_CRAWLS - 1),
+        )
+
+        current_phase = "status_record"
+        finished_at_iso = datetime.now(timezone.utc).isoformat()
+        status_payload = {
+            "source": source,
+            "slug": slug,
+            "status": result.get("status", "success"),
+            "phase": current_phase,
+            "started_at": crawl_started_at,
+            "completed_at": finished_at_iso,
+            "duration_ms": duration_ms,
+            "discovered": result.get("discovered", 0),
+            "inserted": result.get("inserted", 0),
+            "updated": result.get("updated", 0),
+            "unchanged": result.get("unchanged", 0),
+            "deduplicated": result.get("deduplicated", 0),
+            "skipped": result.get("skipped", 0),
+            "deactivated": deactivated_not_seen + deactivated,
+            "deactivated_not_seen": deactivated_not_seen,
+            "deactivated_stale": deactivated,
+            "provider_ms": provider_ms,
+            "upsert_ms": result.get("upsert_ms", 0),
+            "deactivation_total_ms": deactivation_total_ms,
+        }
+        await _record_crawl_status(source, slug, status_payload)
+
+        # Record crawl_runs row in database (non-blocking)
+        try:
+            from app.repositories.observability_repository import ObservabilityRepository
+            obs_repo = ObservabilityRepository()
+            await asyncio.to_thread(
+                obs_repo.record_crawl_run,
+                source=source,
+                slug=slug,
+                started_at=crawl_started_at,
+                finished_at=finished_at_iso,
+                status=result.get("status", "success"),
+                discovered=result.get("discovered", 0),
+                inserted=result.get("inserted", 0),
+                updated=result.get("updated", 0),
+                unchanged=result.get("unchanged", 0),
+                deactivated=deactivated_not_seen + deactivated,
+                fetch_ms=provider_ms,
+                persist_wait_ms=result.get("async_wait_ms", 0),
+                persist_hold_ms=result.get("async_hold_ms", 0),
+                error_type=result.get("error"),
+                anomaly_reason=result.get("anomaly_reason"),
+            )
+        except Exception as obs_exc:
+            logger.warning("Observability recording skipped (non-blocking): %s", obs_exc)
+
+        return {
+            "success": True,
+            "status": result.get("status", "success"),
+            "source": source,
+            "slug": slug,
+            "result": result,
+            "deactivated": deactivated_not_seen + deactivated,
+            "deactivated_not_seen": deactivated_not_seen,
+            "duration_ms": duration_ms,
+            "discovered": result.get("discovered", 0),
+            "inserted": result.get("inserted", 0),
+            "updated": result.get("updated", 0),
+            "unchanged": result.get("unchanged", 0),
+            "deduplicated": result.get("deduplicated", 0),
+            "skipped": result.get("skipped", 0),
+        }
+
+    except asyncio.CancelledError:
+        cancel_event.set()
+        duration_ms = int((time.monotonic() - job_start) * 1000)
+        from app.db.supabase import persistence_gate_snapshot
+        gate = persistence_gate_snapshot()
+        logger.warning(
+            "crawl cancelled=true phase=%s active_crawls=%d source=%s slug=%s "
+            "duration_ms=%d provider_ms=%d threads=%d rss_mb=%.1f "
+            "persistence_waiters=%d persistence_holders=%d "
+            "async_waiting=%d async_holding=%d sync_waiting=%d sync_holding=%d",
+            current_phase,
+            _ACTIVE_CRAWLS,
+            source,
+            slug,
+            duration_ms,
+            provider_ms,
+            threading.active_count(),
+            _get_process_rss_mb(),
+            int(gate.get("persistence_waiters", 0)),
+            int(gate.get("persistence_holders", 0)),
+            int(gate.get("async_waiting_now", 0)),
+            int(gate.get("async_holding_now", 0)),
+            int(gate.get("sync_waiting_now", 0)),
+            int(gate.get("sync_holding_now", 0)),
+        )
+        await _record_crawl_status(
+            source,
+            slug,
+            {
+                "source": source,
+                "slug": slug,
+                "status": "cancelled",
+                "phase": current_phase,
+                "started_at": crawl_started_at,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "duration_ms": duration_ms,
+            },
+        )
+        raise
+    except Exception as exc:
+        cancel_event.set()
+        duration_ms = int((time.monotonic() - job_start) * 1000)
+        try:
+            from app.services.jobs.crawl_dispatcher import complete_target
+            await complete_target(
+                source, slug, False, error=type(exc).__name__,
+                not_found=type(exc).__name__ == "BoardNotFoundError",
+            )
+        except Exception:
+            logger.warning("crawl target failure update failed", exc_info=True)
+        from app.db.supabase import PersistenceTimeoutError
+        from arq import Retry
+        if isinstance(exc, PersistenceTimeoutError):
+            logger.error("Persistence timeout in phase=%s for %s:%s. Retrying.", current_phase, source, slug)
+            raise Retry(defer=ctx.get("job_try", 1) * 30)
+
+        job_logger.failed(duration_ms=duration_ms, error_type=exc.__class__.__name__)
+        from app.db.supabase import persistence_gate_snapshot
+        gate = persistence_gate_snapshot()
+        logger.error(
+            "crawl failed phase=%s active_crawls=%d source=%s slug=%s "
+            "duration_ms=%d error=%s: %s threads=%d rss_mb=%.1f "
+            "persistence_waiters=%d persistence_holders=%d "
+            "async_waiting=%d async_holding=%d sync_waiting=%d sync_holding=%d",
+            current_phase,
+            _ACTIVE_CRAWLS,
+            source,
+            slug,
+            duration_ms,
+            exc.__class__.__name__,
+            exc,
+            threading.active_count(),
+            _get_process_rss_mb(),
+            int(gate.get("persistence_waiters", 0)),
+            int(gate.get("persistence_holders", 0)),
+            int(gate.get("async_waiting_now", 0)),
+            int(gate.get("async_holding_now", 0)),
+            int(gate.get("sync_waiting_now", 0)),
+            int(gate.get("sync_holding_now", 0)),
+        )
+        failed_at_iso = datetime.now(timezone.utc).isoformat()
+        await _record_crawl_status(
+            source,
+            slug,
+            {
+                "source": source,
+                "slug": slug,
+                "status": "failed",
+                "phase": current_phase,
+                "started_at": crawl_started_at,
+                "completed_at": failed_at_iso,
+                "duration_ms": duration_ms,
+                "error": f"{exc.__class__.__name__}: {exc}",
+            },
+        )
+        try:
+            from app.repositories.observability_repository import ObservabilityRepository
+            obs_repo = ObservabilityRepository()
+            await asyncio.to_thread(
+                obs_repo.record_crawl_run,
+                source=source,
+                slug=slug,
+                started_at=crawl_started_at,
+                finished_at=failed_at_iso,
+                status="failed",
+                discovered=0,
+                inserted=0,
+                updated=0,
+                unchanged=0,
+                deactivated=0,
+                fetch_ms=provider_ms,
+                error_type=exc.__class__.__name__,
+            )
+        except Exception as obs_exc:
+            logger.warning("Observability recording failed run skipped (non-blocking): %s", obs_exc)
+        raise
+    finally:
+        cancel_event.set()
+        _ACTIVE_CRAWLS = max(0, _ACTIVE_CRAWLS - 1)
+        try:
+            from app.workers.settings import get_redis_pool
+            redis = await get_redis_pool()
+            lock_key = f"crawl_lock:{source}:{slug}"
+            lock_val = await redis.get(lock_key)
+            if lock_val and lock_val.decode("utf-8") == ctx.get("job_id"):
+                await redis.delete(lock_key)
+        except Exception:
+            pass
+        logger.info(
+            "crawl finished active_crawls=%d source=%s slug=%s threads=%d rss_mb=%.1f",
+            _ACTIVE_CRAWLS,
+            source,
+            slug,
+            threading.active_count(),
+            _get_process_rss_mb(),
+        )
+

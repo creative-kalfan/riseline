@@ -1,0 +1,429 @@
+"""Supabase client factory.
+
+Provides a service-role client (bypasses RLS) for ingestion/repository work
+and an RLS-authenticated client for user-scoped queries.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from contextlib import asynccontextmanager
+import threading
+import time
+from functools import lru_cache
+from typing import Any, Callable, Optional
+
+import httpx
+from supabase import Client, ClientOptions, create_client
+
+from app.config import get_settings
+
+
+class PersistenceCancelledError(Exception):
+    """Raised when sync database persistence/deactivation work is cancelled."""
+
+
+class PersistenceTimeoutError(Exception):
+    """Raised when acquiring the persistence semaphore exceeds its deadline."""
+
+
+# Thread-local storage for service-role clients.
+# Each OS thread gets its own isolated Client instance with its own HTTP/2
+# connection pool, completely preventing cross-thread connection state
+# corruption and httpx.RemoteProtocolError.
+_THREAD_LOCAL = threading.local()
+
+# Bounded persistence concurrency (semaphore).
+# Replaces the single process-global mutex with a bounded semaphore
+# (PERSISTENCE_MAX_CONCURRENCY, default 2). Each thread uses its own
+# thread-local Supabase client so HTTP/2 transport state is never shared,
+# while the semaphore bounds total database connection usage against Supabase.
+_PERSISTENCE_SEMAPHORE: Optional[threading.BoundedSemaphore] = None
+_SEMAPHORE_GUARD = threading.Lock()
+
+
+def get_persistence_semaphore() -> threading.BoundedSemaphore:
+    """Return the bounded persistence semaphore (initialized once)."""
+    global _PERSISTENCE_SEMAPHORE
+    if _PERSISTENCE_SEMAPHORE is None:
+        with _SEMAPHORE_GUARD:
+            if _PERSISTENCE_SEMAPHORE is None:
+                try:
+                    concurrency = max(1, get_settings().persistence_max_concurrency)
+                except Exception:
+                    concurrency = 2
+                _PERSISTENCE_SEMAPHORE = threading.BoundedSemaphore(concurrency)
+    return _PERSISTENCE_SEMAPHORE
+
+
+def reset_persistence_semaphore(concurrency: Optional[int] = None) -> None:
+    """Reset the persistence semaphore (for tests)."""
+    global _PERSISTENCE_SEMAPHORE
+    with _SEMAPHORE_GUARD:
+        if concurrency is None:
+            try:
+                concurrency = max(1, get_settings().persistence_max_concurrency)
+            except Exception:
+                concurrency = 2
+        _PERSISTENCE_SEMAPHORE = threading.BoundedSemaphore(concurrency)
+    reset_async_persistence_semaphore(concurrency)
+
+
+_ASYNC_PERSISTENCE_SEMAPHORE: Optional[asyncio.Semaphore] = None
+_ASYNC_SEMAPHORE_GUARD = threading.Lock()
+
+
+def get_async_persistence_semaphore() -> asyncio.Semaphore:
+    """Return the bounded asyncio persistence semaphore (initialized once)."""
+    global _ASYNC_PERSISTENCE_SEMAPHORE
+    if _ASYNC_PERSISTENCE_SEMAPHORE is None:
+        with _ASYNC_SEMAPHORE_GUARD:
+            if _ASYNC_PERSISTENCE_SEMAPHORE is None:
+                try:
+                    concurrency = max(1, get_settings().persistence_max_concurrency)
+                except Exception:
+                    concurrency = 2
+                _ASYNC_PERSISTENCE_SEMAPHORE = asyncio.Semaphore(concurrency)
+    return _ASYNC_PERSISTENCE_SEMAPHORE
+
+
+def reset_async_persistence_semaphore(concurrency: Optional[int] = None) -> None:
+    """Reset the async persistence semaphore (for tests)."""
+    global _ASYNC_PERSISTENCE_SEMAPHORE
+    with _ASYNC_SEMAPHORE_GUARD:
+        if concurrency is None:
+            try:
+                concurrency = max(1, get_settings().persistence_max_concurrency)
+            except Exception:
+                concurrency = 2
+        _ASYNC_PERSISTENCE_SEMAPHORE = asyncio.Semaphore(concurrency)
+
+
+@asynccontextmanager
+async def async_persistence_slot(
+    cancel_event: Optional[threading.Event] = None,
+    timeout_seconds: Optional[float] = None,
+):
+    """Asynchronously acquire a persistence slot before entering to_thread.
+
+    Prevents ThreadPoolExecutor worker threads from being spawned or kept busy
+    merely polling for the persistence semaphore. Bounded by timeout_seconds and
+    cancellation-aware.
+
+    Forensics note: this gate tracks its own ``_ASYNC_SLOT_STATS`` counters
+    (async waiters/holders, wait/hold timing), fully independent from the
+    sync ``_LOCK_STATS`` used by :func:`call_serialized`. Use
+    :func:`persistence_gate_snapshot` to observe both gates without
+    conflating them. Timeout errors carry ``(gate=async)`` so they are
+    distinguishable from the sync gate while remaining substring-compatible
+    with the legacy message.
+    """
+    if cancel_event is not None and cancel_event.is_set():
+        raise PersistenceCancelledError("Persistence work cancelled before acquiring semaphore")
+
+    sem = get_async_persistence_semaphore()
+    with _ASYNC_STATS_GUARD:
+        _ASYNC_SLOT_STATS["waiting_now"] += 1
+    queued_at = time.monotonic()
+
+    acquired = False
+    try:
+        while not acquired:
+            if cancel_event is not None and cancel_event.is_set():
+                raise PersistenceCancelledError("Persistence work cancelled while waiting for semaphore")
+            now = time.monotonic()
+            if timeout_seconds is not None and (now - queued_at) >= timeout_seconds:
+                raise PersistenceTimeoutError(
+                    f"Timed out after {timeout_seconds:.1f}s waiting for persistence semaphore (gate=async)"
+                )
+            step_timeout = 0.25
+            if timeout_seconds is not None:
+                step_timeout = min(0.25, max(0.01, timeout_seconds - (now - queued_at)))
+            try:
+                await asyncio.wait_for(sem.acquire(), timeout=step_timeout)
+                acquired = True
+            except asyncio.TimeoutError:
+                pass
+    except asyncio.CancelledError:
+        if cancel_event is not None:
+            cancel_event.set()
+        raise
+    finally:
+        with _ASYNC_STATS_GUARD:
+            _ASYNC_SLOT_STATS["waiting_now"] -= 1
+
+    wait_ms = (time.monotonic() - queued_at) * 1000.0
+    with _ASYNC_STATS_GUARD:
+        _ASYNC_SLOT_STATS["holding_now"] += 1
+    held_at = time.monotonic()
+    try:
+        if cancel_event is not None and cancel_event.is_set():
+            raise PersistenceCancelledError("Persistence work cancelled after acquiring semaphore")
+        yield
+    finally:
+        sem.release()
+        hold_ms = (time.monotonic() - held_at) * 1000.0
+        with _ASYNC_STATS_GUARD:
+            _ASYNC_SLOT_STATS["holding_now"] -= 1
+            _ASYNC_SLOT_STATS["sections"] += 1
+            _ASYNC_SLOT_STATS["wait_ms_total"] += wait_ms
+            _ASYNC_SLOT_STATS["hold_ms_total"] += hold_ms
+            if wait_ms > _ASYNC_SLOT_STATS["wait_ms_max"]:
+                _ASYNC_SLOT_STATS["wait_ms_max"] = wait_ms
+            if hold_ms > _ASYNC_SLOT_STATS["hold_ms_max"]:
+                _ASYNC_SLOT_STATS["hold_ms_max"] = hold_ms
+
+
+# Lightweight lock-contention telemetry (production throughput diagnosis).
+# Updated under _STATS_GUARD; reads via lock_stats_snapshot(). Overhead is a
+# few monotonic() calls + integer ops per serialized section — negligible
+# next to a Supabase round trip. Never logs payloads, only durations/counts.
+#
+# Forensics split (slot forensics): the async gate (async_persistence_slot)
+# and the sync gate (call_serialized) are INDEPENDENT semaphores with the
+# same configured concurrency. They must not share one gauge:
+#  - _LOCK_STATS tracks the sync gate only (executor threads in call_serialized).
+#  - _ASYNC_SLOT_STATS tracks the async gate only (coroutines in async_persistence_slot).
+# Use persistence_gate_snapshot() to observe both without conflation.
+_STATS_GUARD = threading.Lock()
+_LOCK_STATS: dict[str, float] = {
+    "sections": 0.0,  # total call_serialized executions
+    "wait_ms_total": 0.0,  # time queued waiting for the lock
+    "hold_ms_total": 0.0,  # time holding the lock (the serialized work)
+    "wait_ms_max": 0.0,
+    "hold_ms_max": 0.0,
+    "waiting_now": 0.0,  # threads currently queued (gauge)
+    "holding_now": 0.0,  # threads currently executing (gauge)
+}
+
+_ASYNC_STATS_GUARD = threading.Lock()
+_ASYNC_SLOT_STATS: dict[str, float] = {
+    "sections": 0.0,  # total async slot acquisitions
+    "wait_ms_total": 0.0,  # time coroutines queued for the async gate
+    "hold_ms_total": 0.0,  # time holding the async slot (DB work; single-gate: no inner sync-wait)
+    "wait_ms_max": 0.0,
+    "hold_ms_max": 0.0,
+    "waiting_now": 0.0,  # coroutines currently queued (gauge)
+    "holding_now": 0.0,  # coroutines currently holding a slot (gauge)
+}
+
+
+def call_serialized(
+    fn: Callable[..., Any],
+    /,
+    *args: Any,
+    cancel_event: Optional[threading.Event] = None,
+    timeout_seconds: Optional[float] = None,
+    **kwargs: Any,
+) -> Any:
+    """Run a sync Supabase-client call with bounded concurrency and cancellation safety.
+
+    Args:
+        fn: Sync callable to execute under the semaphore.
+        *args: Positional arguments for fn.
+        cancel_event: Optional cancellation token checked while polling for the
+            semaphore and before/after executing fn.
+        timeout_seconds: Maximum seconds to wait for semaphore acquisition.
+        **kwargs: Keyword arguments for fn.
+    """
+    if cancel_event is not None and cancel_event.is_set():
+        raise PersistenceCancelledError("Persistence work cancelled before acquiring semaphore")
+
+    sem = get_persistence_semaphore()
+    with _STATS_GUARD:
+        _LOCK_STATS["waiting_now"] += 1
+    queued_at = time.monotonic()
+
+    # Bounded polling loop: permits clean exit on cancellation without zombie threads
+    acquired = False
+    try:
+        while not acquired:
+            if cancel_event is not None and cancel_event.is_set():
+                raise PersistenceCancelledError("Persistence work cancelled while waiting for semaphore")
+            now = time.monotonic()
+            if timeout_seconds is not None and (now - queued_at) >= timeout_seconds:
+                raise PersistenceTimeoutError(
+                    f"Timed out after {timeout_seconds:.1f}s waiting for persistence semaphore (gate=sync)"
+                )
+            acquired = sem.acquire(timeout=0.25)
+    finally:
+        with _STATS_GUARD:
+            _LOCK_STATS["waiting_now"] -= 1
+
+    wait_ms = (time.monotonic() - queued_at) * 1000.0
+    with _STATS_GUARD:
+        _LOCK_STATS["holding_now"] += 1
+    held_at = time.monotonic()
+    try:
+        if cancel_event is not None and cancel_event.is_set():
+            raise PersistenceCancelledError("Persistence work cancelled after acquiring semaphore")
+        return fn(*args, **kwargs)
+    finally:
+        sem.release()
+        hold_ms = (time.monotonic() - held_at) * 1000.0
+        with _STATS_GUARD:
+            _LOCK_STATS["holding_now"] -= 1
+            _LOCK_STATS["sections"] += 1
+            _LOCK_STATS["wait_ms_total"] += wait_ms
+            _LOCK_STATS["hold_ms_total"] += hold_ms
+            if wait_ms > _LOCK_STATS["wait_ms_max"]:
+                _LOCK_STATS["wait_ms_max"] = wait_ms
+            if hold_ms > _LOCK_STATS["hold_ms_max"]:
+                _LOCK_STATS["hold_ms_max"] = hold_ms
+
+
+def run_gated_persistence(
+    fn: Callable[..., Any],
+    /,
+    *args: Any,
+    cancel_event: Optional[threading.Event] = None,
+    timeout_seconds: Optional[float] = None,
+    **kwargs: Any,
+) -> Any:
+    """Run a sync persistence operation already holding an async slot.
+
+    Ownership rule (single-gate correction): callers that execute inside
+    ``async_persistence_slot`` MUST use this path instead of
+    :func:`call_serialized`. The async slot is the capacity boundary
+    (``persistence_max_concurrency``); re-acquiring the sync persistence
+    semaphore here would double-gate and recreate head-of-line blocking.
+
+    Thread-safety: the caller runs in an ``asyncio.to_thread`` executor
+    thread with a thread-local Supabase client (see ``get_service_client``),
+    so no shared-transport state is touched. Capacity is still bounded
+    because at most ``persistence_max_concurrency`` coroutines hold async
+    slots concurrently.
+
+    Telemetry: records ``wait_ms=0`` (no second capacity wait) and the real
+    DB ``hold_ms`` under the shared holding gauge, so ``sync_holding_now``
+    continues to mean "threads executing DB" while ``sync_waiting_now``
+    stays zero for gated paths. Cancellation is checked before/after
+    execution; ``timeout_seconds`` is accepted for signature parity but
+    performs no second capacity wait (the async slot already enforced it).
+    """
+    if cancel_event is not None and cancel_event.is_set():
+        raise PersistenceCancelledError("Persistence work cancelled before execution (gated)")
+    wait_ms = 0.0
+    with _STATS_GUARD:
+        _LOCK_STATS["holding_now"] += 1
+    held_at = time.monotonic()
+    try:
+        if cancel_event is not None and cancel_event.is_set():
+            raise PersistenceCancelledError("Persistence work cancelled after acquiring slot (gated)")
+        return fn(*args, **kwargs)
+    finally:
+        hold_ms = (time.monotonic() - held_at) * 1000.0
+        with _STATS_GUARD:
+            _LOCK_STATS["holding_now"] -= 1
+            _LOCK_STATS["sections"] += 1
+            _LOCK_STATS["wait_ms_total"] += wait_ms
+            _LOCK_STATS["hold_ms_total"] += hold_ms
+            if hold_ms > _LOCK_STATS["hold_ms_max"]:
+                _LOCK_STATS["hold_ms_max"] = hold_ms
+
+
+def lock_stats_snapshot() -> dict[str, float]:
+    """Return a copy of the serialization-lock contention counters."""
+    with _STATS_GUARD:
+        snap = dict(_LOCK_STATS)
+    sections = snap["sections"] or 1.0
+    snap["wait_ms_avg"] = snap["wait_ms_total"] / sections
+    snap["hold_ms_avg"] = snap["hold_ms_total"] / sections
+    return snap
+
+
+def reset_lock_stats() -> None:
+    """Zero the lock-contention counters (tests only).
+
+    Resets both the sync gate and the async slot gate so legacy callers
+    that only know about the sync gauge still observe a clean slate.
+    """
+    with _STATS_GUARD:
+        for key in _LOCK_STATS:
+            _LOCK_STATS[key] = 0.0
+    with _ASYNC_STATS_GUARD:
+        for key in _ASYNC_SLOT_STATS:
+            _ASYNC_SLOT_STATS[key] = 0.0
+
+
+def async_slot_stats_snapshot() -> dict[str, float]:
+    """Return a copy of the async persistence-slot counters."""
+    with _ASYNC_STATS_GUARD:
+        snap = dict(_ASYNC_SLOT_STATS)
+    sections = snap["sections"] or 1.0
+    snap["wait_ms_avg"] = snap["wait_ms_total"] / sections
+    snap["hold_ms_avg"] = snap["hold_ms_total"] / sections
+    return snap
+
+
+def reset_async_slot_stats() -> None:
+    """Zero the async slot counters (tests only)."""
+    with _ASYNC_STATS_GUARD:
+        for key in _ASYNC_SLOT_STATS:
+            _ASYNC_SLOT_STATS[key] = 0.0
+
+
+def reset_persistence_telemetry() -> None:
+    """Zero both sync and async persistence telemetry (forensics tests)."""
+    reset_lock_stats()
+    reset_async_slot_stats()
+
+
+def persistence_gate_snapshot() -> dict[str, float]:
+    """Combined async + sync gate view without conflation.
+
+    Keys:
+      async_waiting_now / async_holding_now — coroutines at the async gate.
+      sync_waiting_now / sync_holding_now — executor threads at the sync gate.
+      persistence_waiters — legacy combined waiters (async + sync).
+      persistence_holders — legacy sync holders (what production logs
+        historically reported as ``persistence_holders``).
+    """
+    with _ASYNC_STATS_GUARD:
+        async_snap = dict(_ASYNC_SLOT_STATS)
+    with _STATS_GUARD:
+        sync_snap = dict(_LOCK_STATS)
+    return {
+        "async_waiting_now": float(async_snap.get("waiting_now", 0.0)),
+        "async_holding_now": float(async_snap.get("holding_now", 0.0)),
+        "sync_waiting_now": float(sync_snap.get("waiting_now", 0.0)),
+        "sync_holding_now": float(sync_snap.get("holding_now", 0.0)),
+        "persistence_waiters": float(async_snap.get("waiting_now", 0.0))
+        + float(sync_snap.get("waiting_now", 0.0)),
+        "persistence_holders": float(sync_snap.get("holding_now", 0.0)),
+    }
+
+
+# Hard timeout for individual PostgREST HTTP operations (connect 5s, read 15s, write 15s, pool 5s).
+# Prevents any single DB request from stalling indefinitely under load.
+_POSTGREST_TIMEOUT = httpx.Timeout(connect=5.0, read=15.0, write=15.0, pool=5.0)
+
+
+def get_service_client() -> Client:
+    """Return a thread-local service-role Supabase client (bypasses RLS).
+
+    Each thread maintains its own isolated Client instance with its own HTTP/2
+    connection pool, completely eliminating cross-thread connection state
+    corruption and httpx.RemoteProtocolError. Configured with strict timeouts
+    to bound underlying request lifetimes.
+    """
+    client = getattr(_THREAD_LOCAL, "service_client", None)
+    if client is None:
+        settings = get_settings()
+        options = ClientOptions(postgrest_client_timeout=_POSTGREST_TIMEOUT)
+        client = create_client(settings.supabase_url, settings.supabase_service_role_key, options=options)
+        _THREAD_LOCAL.service_client = client
+    return client
+
+
+def get_authenticated_client(jwt: str) -> Client:
+    """Return an RLS-authenticated Supabase client for a user JWT."""
+    settings = get_settings()
+    options = ClientOptions(
+        headers={"Authorization": f"Bearer {jwt}"},
+    )
+    return create_client(
+        settings.supabase_url,
+        settings.supabase_anon_key,
+        options,
+    )

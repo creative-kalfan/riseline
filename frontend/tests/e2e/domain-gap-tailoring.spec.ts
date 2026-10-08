@@ -9,7 +9,7 @@ const __dirname = path.dirname(__filename);
 const screenshotsDir = path.resolve(__dirname, "../../playwright/screenshots/tailoring-journey");
 fs.mkdirSync(screenshotsDir, { recursive: true });
 
-const BACKEND_DIR = path.resolve(__dirname, "../../../careeros-backend-py");
+const BACKEND_DIR = path.resolve(__dirname, "../../../backend");
 const SEED_NOC_SCRIPT = path.join(BACKEND_DIR, "scripts", "seed_noc_analyst.py");
 const SEED_PASTRY_CHEF_SCRIPT = path.join(BACKEND_DIR, "scripts", "seed_pastry_chef.py");
 

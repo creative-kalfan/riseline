@@ -9,7 +9,7 @@ const __dirname = path.dirname(__filename);
 // Load test credentials from .env if available
 function loadEnv() {
   const possiblePaths = [
-    path.resolve(__dirname, "../careeros-backend-py/.env"),
+    path.resolve(__dirname, "../backend/.env"),
     path.resolve(__dirname, ".env"),
   ];
   for (const p of possiblePaths) {

@@ -1,0 +1,100 @@
+# ------------------------------------------------------------------
+# CareerOS monorepo root .gitignore
+# Covers frontend/ (Vite + TanStack) and backend/ (FastAPI) in one place.
+# Subtree-imported .gitignore files inside frontend/ and backend/ remain
+# authoritative for their subtrees; this root file adds monorepo-wide guards,
+# especially secrets protection.
+# ------------------------------------------------------------------
+
+# ---- Secrets / environment (NEVER commit) ----
+.env
+.env.*
+!.env.example
+frontend/.env
+frontend/.env.*
+backend/.env
+backend/.env.*
+!frontend/.env.example
+!backend/.env.example
+
+fresh_token.txt
+*token*.txt
+*token*.json
+live_auth.txt
+*auth*.txt
+auth-debug*.log
+auth-debug*.json
+
+# ---- Dependencies ----
+node_modules/
+frontend/node_modules/
+.pnp
+.pnp.js
+
+# ---- Build output ----
+.next/
+out/
+dist/
+build/
+.output/
+.vercel/
+frontend/.output/
+frontend/dist/
+frontend/.vercel/
+.tanstack/
+.nitro/
+.vinxi/
+.wrangler/
+.dev.vars
+
+# ---- Logs ----
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ---- Python ----
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+backend/.venv/
+backend/venv/
+
+# ---- Supabase ----
+.supabase/
+
+# ---- OS / editors ----
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.cursor/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ---- Playwright / test artifacts ----
+playwright/.auth/
+playwright/screenshots/
+test-results/
+playwright-report/
+frontend/test-results/
+frontend/playwright-report/
+frontend/playwright/.auth/
+backend/tests/artifacts/**/*_BEFORE.png
+backend/tests/artifacts/**/*_AFTER*.png
+
+# ---- Misc ----
+*.tmp
+ce_refs.txt
+backend-log.txt
+*.tmp

@@ -9,7 +9,7 @@ const __dirname = path.dirname(__filename);
 const auditDir = path.resolve(__dirname, "../../playwright/screenshots/audit1");
 fs.mkdirSync(auditDir, { recursive: true });
 
-const BACKEND_DIR = path.resolve(__dirname, "../../../careeros-backend-py");
+const BACKEND_DIR = path.resolve(__dirname, "../../../backend");
 
 interface SeedResult {
   resume_id: string;

@@ -3,6 +3,9 @@ name: Crawl Scheduler Tick
 # Wakes the backend scheduler. This workflow NEVER crawls: it only calls the
 # authenticated tick endpoint, which claims due crawl_targets and enqueues ARQ
 # jobs that the Render worker executes.
+#
+# Monorepo location: root .github/workflows (consolidated from backend/.github/workflows).
+# No path dependency — only calls the authenticated tick endpoint via secrets.
 
 on:
   schedule:

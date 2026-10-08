@@ -9,7 +9,7 @@ const __dirname = path.dirname(__filename);
 const screenshotsDir = path.resolve(__dirname, "../../playwright/screenshots/apply-tailoring");
 fs.mkdirSync(screenshotsDir, { recursive: true });
 
-const BACKEND_DIR = path.resolve(__dirname, "../../../careeros-backend-py");
+const BACKEND_DIR = path.resolve(__dirname, "../../../backend");
 const SEED_SCRIPT = path.join(BACKEND_DIR, "scripts", "seed_real_resume_copy.py");
 
 function runSeed(): { resume_id: string; master_version_id: string; user_id: string } {

@@ -122,7 +122,7 @@ async def test_naukri_adapter_rate_limit_and_fallback():
             </ul>
         </div>
         """
-        with patch("app.config.get_settings") as mock_settings:
+        with patch("app.crawlers.adapters.naukri.get_settings") as mock_settings:
             mock_settings.return_value.firecrawl_api_key = "test_key"
             with patch("app.crawlers.adapters.naukri.FirecrawlClient") as mock_fc_client:
                 mock_instance = AsyncMock()

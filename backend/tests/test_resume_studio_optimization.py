@@ -304,7 +304,8 @@ def test_apply_version_operation_summary_and_skills_and_bullet(sample_resume_con
 
         with patch.object(ResumeRepository, "get_version", return_value=mock_version), \
              patch.object(ResumeRepository, "get_resume", return_value=mock_resume), \
-             patch.object(ResumeRepository, "update_version", side_effect=mock_update_version):
+             patch.object(ResumeRepository, "update_version", side_effect=mock_update_version), \
+             patch("app.services.resumes.compiler_service.resume_compiler_service.compile_and_persist", return_value={"storage_path": "mock", "docx_storage_path": "mock", "geometry": {}, "strategy": "direct_pdf_mutation"}):
 
             # 1. Summary replace
             resp = client.post(

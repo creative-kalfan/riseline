@@ -271,7 +271,8 @@ def test_fixture_10_unusual_fonts_content_and_style() -> None:
     assert p.education[0].institution == "Harvard University"
 
     assert "document_style" in res.geometry
-    assert "impact" in res.geometry["document_style"]["body_font"].lower()
+    font_name = res.geometry["document_style"]["body_font"].lower()
+    assert "impact" in font_name or "anton" in font_name
 
 
 def test_fixture_11_dense_bullets_content_preservation() -> None:

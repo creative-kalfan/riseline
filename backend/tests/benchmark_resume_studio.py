@@ -39,7 +39,8 @@ import math
 import statistics
 from typing import Any, Dict, List, Tuple
 
-import fitz  # PyMuPDF
+import fitz
+import os  # PyMuPDF
 from PIL import Image, ImageChops, ImageStat
 
 from app.services.resumes.pdf_mutation import PDFMutationEngine, fit_font_size, map_font_code
@@ -180,18 +181,18 @@ def fixture_10_unusual_fonts() -> bytes:
     doc = fitz.open()
     page = doc.new_page(width=612, height=792)
     # Use real non-base-14 font (Impact) embedded via font buffer
-    f_impact = fitz.Font(fontfile=r"C:\Windows\Fonts\impact.ttf")
+    f_impact = fitz.Font(fontfile=os.path.join(os.path.dirname(__file__), "assets", "Anton-Regular.ttf"))
     page.insert_font(fontname="ImpactFont", fontbuffer=f_impact.buffer)
     # Header
-    page.insert_textbox(fitz.Rect(50, 36, 562, 75), "DR. ARLO CHEN\narlo.chen@linguistics.edu | Cambridge, MA", fontsize=12, fontname="ImpactFont")
+    page.insert_textbox(fitz.Rect(50, 36, 600, 125), "DR. ARLO CHEN\narlo.chen@linguistics.edu | Cambridge, MA", fontsize=12, fontname="ImpactFont")
     # Summary
-    page.insert_textbox(fitz.Rect(50, 85, 562, 160), "PROFESSIONAL SUMMARY\nDistinguished Academic Researcher and Computational Linguist with 12+ years advancing natural language semantics, formal grammars, and neural machine translation architectures.", fontsize=10.5, fontname="ImpactFont")
+    page.insert_textbox(fitz.Rect(50, 85, 600, 210), "PROFESSIONAL SUMMARY\nDistinguished Academic Researcher and Computational Linguist with 12+ years advancing natural language semantics, formal grammars, and neural machine translation architectures.", fontsize=10.5, fontname="ImpactFont")
     # Experience
-    page.insert_textbox(fitz.Rect(50, 170, 562, 270), "WORK EXPERIENCE\nLanguage Modeling Institute — Principal Research Scientist (2019 – Present)\n• Directed core research initiatives in multilingual representation learning and semantic parsing.\n• Published 14 peer-reviewed papers in computational linguistics and semantic theory.", fontsize=10.5, fontname="ImpactFont")
+    page.insert_textbox(fitz.Rect(50, 170, 600, 320), "WORK EXPERIENCE\nLanguage Modeling Institute — Principal Research Scientist (2019 – Present)\n• Directed core research initiatives in multilingual representation learning and semantic parsing.\n• Published 14 peer-reviewed papers in computational linguistics and semantic theory.", fontsize=10.5, fontname="ImpactFont")
     # Education
-    page.insert_textbox(fitz.Rect(50, 280, 562, 335), "EDUCATION\nHarvard University\nDoctor of Philosophy in Computational Linguistics, 2018", fontsize=10.5, fontname="ImpactFont")
+    page.insert_textbox(fitz.Rect(50, 280, 600, 385), "EDUCATION\nHarvard University\nDoctor of Philosophy in Computational Linguistics, 2018", fontsize=10.5, fontname="ImpactFont")
     # Skills
-    page.insert_textbox(fitz.Rect(50, 345, 562, 395), "SKILLS & TECHNOLOGIES\nNatural Language Processing, Formal Semantics, PyTorch, Corpus Linguistics, LaTeX", fontsize=10.5, fontname="ImpactFont")
+    page.insert_textbox(fitz.Rect(50, 345, 600, 445), "SKILLS & TECHNOLOGIES\nNatural Language Processing, Formal Semantics, PyTorch, Corpus Linguistics, LaTeX", fontsize=10.5, fontname="ImpactFont")
     pdf_bytes = doc.tobytes()
     doc.close()
     return pdf_bytes

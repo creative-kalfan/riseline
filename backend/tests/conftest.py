@@ -11,6 +11,7 @@ os.environ["NEXT_PUBLIC_SUPABASE_ANON_KEY"] = "test-supabase-anon"
 
 import pytest
 from app.llm.gateway import LLMResponse
+import app.workers.settings  # Force register all jobs globally
 
 
 class FakeLLMGateway:
@@ -41,3 +42,12 @@ def guard_live_network_and_llm(request: pytest.FixtureRequest, monkeypatch: pyte
     # In default runs, block real outbound HTTP socket connections if attempted
     # by raising a clear error if unmocked HTTP occurs.
     pass
+
+
+@pytest.fixture(autouse=True)
+def _preserve_registry():
+    from app.workers.registry import _REGISTRY
+    backup = dict(_REGISTRY)
+    yield
+    _REGISTRY.clear()
+    _REGISTRY.update(backup)

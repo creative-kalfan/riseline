@@ -415,6 +415,7 @@ resume-pilot/ (Parent Wrapper)
 10. **Uncommitted Obsolete Frontend Components:** 6 obsolete resume/optimization prototype files (`ats-dashboard.tsx`, `optimization-workspace.tsx`, etc.) and 1 build log (`vite.err`) remain uncommitted in the frontend working tree.
 11. **JobSpy Optional Dependency:** `python-jobspy` is intentionally NOT in `requirements.txt`. The adapter degrades to an empty (logged) crawl when uninstalled; install it only on workers that run JobSpy discovery. No RLS/schema impact (reuses `JobIngestionService` → `JobRepository.upsert_jobs`).
 12. **No New Migrations for Ingestion 2.0:** Provenance (`source_history`), freshness (`last_seen_at`), and dedup (migration 013 index) already cover multi-source needs. Cross-source duplicates stay conservative (separate rows) until a `canonical_url` unique constraint is proven safe — no fuzzy merging.
+13. **python-multipart Missing Dependency (RESOLVED):** Previously, requirements.txt lacked the python-multipart dependency, which is implicitly required by FastAPI for File and Form endpoints (like /upload-csv). This caused a runtime RuntimeError during startup on Render. Resolved by adding python-multipart==0.0.32 and tests/test_startup.py.
 
 ---
 

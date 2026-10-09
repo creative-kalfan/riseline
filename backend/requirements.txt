@@ -18,3 +18,4 @@ parsel==1.11.0
 crawl4ai==0.9.4
 sentry-sdk==2.19.2
 python-jobspy==1.1.82
+python-multipart==0.0.32

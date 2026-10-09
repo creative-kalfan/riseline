@@ -162,6 +162,8 @@ def detect_education_entries(blocks: List[DocumentBlock], skip_first_line: bool 
     boundaries = []
     in_entry = False
     entry_start = 0
+    current_has_degree = False
+    current_has_institution = False
 
     for i, block in enumerate(blocks):
         text = block.text.strip()
@@ -206,11 +208,29 @@ def detect_education_entries(blocks: List[DocumentBlock], skip_first_line: bool 
                 is_header = True
 
             if is_header:
+                should_split = True
                 if in_entry:
-                    boundaries.append((entry_start, i - 1))
-                in_entry = True
-                entry_start = i
-                break  # Only need one header line per block
+                    # Don't split if this "header" is just completing the current entry
+                    # For example, institution was on previous line, degree is on this line
+                    if has_degree and not has_institution and not current_has_degree:
+                        should_split = False
+                    elif has_institution and not has_degree and not current_has_institution:
+                        should_split = False
+                
+                if should_split:
+                    if in_entry:
+                        boundaries.append((entry_start, i - 1))
+                    in_entry = True
+                    entry_start = i
+                    current_has_degree = has_degree
+                    current_has_institution = has_institution
+                    break  # Only need one header line per block
+                else:
+                    current_has_degree = current_has_degree or has_degree
+                    current_has_institution = current_has_institution or has_institution
+            else:
+                current_has_degree = current_has_degree or has_degree
+                current_has_institution = current_has_institution or has_institution
 
     if in_entry:
         boundaries.append((entry_start, len(blocks) - 1))

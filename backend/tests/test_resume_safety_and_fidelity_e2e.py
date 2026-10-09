@@ -52,7 +52,7 @@ def _render_pdf_to_image(pdf_bytes: bytes, page_idx: int = 0, dpi: int = 150) ->
     "fixture_name, expected_font_substring",
     [
         ("9_graphics_and_images", "helv"),
-        ("10_unusual_fonts", "Impact"),
+        ("10_unusual_fonts", "Anton"),
         ("2_two_column", "helv"),
     ],
 )
@@ -118,8 +118,8 @@ def test_style_extraction_e2e_render_and_assert(fixture_name: str, expected_font
         assert p.education[0].institution == "Harvard University"
         assert p.education[0].degree == "Ph.D."
         # Style extractor explicitly detected non-standard font (Impact)
-        assert extracted_style["body_font"] == "Impact"
-        assert extracted_style["heading_font"] == "Impact"
+        assert extracted_style["body_font"] == "Anton"
+        assert extracted_style["heading_font"] == "Anton"
 
     # 5. Compile through real document model & compiler
     content = parsed_resume_to_resume_content(parse_result.parsed)

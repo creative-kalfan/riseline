@@ -8,7 +8,7 @@ const __dirname = path.dirname(__filename);
 const outDir = path.resolve(__dirname, "../../playwright/screenshots/landing_cinematic");
 fs.mkdirSync(outDir, { recursive: true });
 
-test.describe("CareerOS Cinematic Landing Page Verification", () => {
+test.describe("Riseline Cinematic Landing Page Verification", () => {
   test("Desktop 1440x900: verify automatic progression, keyboard navigation, and capture all scenes", async ({
     page,
   }) => {

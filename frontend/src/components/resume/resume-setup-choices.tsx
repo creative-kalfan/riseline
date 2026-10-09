@@ -132,7 +132,7 @@ export function ResumeSetupChoices() {
         <SetupChoiceCard
           pathCode="[PATH // 01]"
           title="Upload Existing Resume"
-          description="Import your PDF or DOCX resume. CareerOS parses your structure, extract skills, and prepares ATS alignment."
+          description="Import your PDF or DOCX resume. Riseline parses your structure, extract skills, and prepares ATS alignment."
           icon={FileText}
           ctaText="Upload PDF / DOCX"
           ctaIcon={Upload}

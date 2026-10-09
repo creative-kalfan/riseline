@@ -18,7 +18,7 @@ import { PageHeader } from "@/components/app/page-header";
 export const Route = createFileRoute("/_app/recommendations")({
   head: () => ({
     meta: [
-      { title: "Recommendations · CareerOS" },
+      { title: "Recommendations · Riseline" },
       {
         name: "description",
         content: "Preference-aware matches blending ATS score with your career profile.",

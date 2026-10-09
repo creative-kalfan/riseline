@@ -10,7 +10,7 @@ import { createFileRoute, Navigate, useParams } from "@tanstack/react-router";
  */
 export const Route = createFileRoute("/_app/optimizer/$resumeId")({
   head: () => ({
-    meta: [{ title: "Resume Studio · CareerOS" }],
+    meta: [{ title: "Resume Studio · Riseline" }],
   }),
   component: OptimizerRedirect,
 });

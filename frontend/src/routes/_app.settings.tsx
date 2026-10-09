@@ -25,7 +25,7 @@ import { useAuth } from "@/auth/useAuth";
 export const Route = createFileRoute("/_app/settings")({
   head: () => ({
     meta: [
-      { title: "Settings · CareerOS" },
+      { title: "Settings · Riseline" },
       {
         name: "description",
         content: "Account, appearance, integrations and workspace preferences.",
@@ -242,7 +242,7 @@ function SettingsPage() {
             <CardHeader className="p-5 pb-3 border-b-2 border-border/40">
               <CardTitle className="text-xs font-mono font-bold uppercase tracking-wider">Workspace Theme</CardTitle>
               <CardDescription className="text-xs">
-                Select your preferred visual mode for CareerOS workspace.
+                Select your preferred visual mode for Riseline workspace.
               </CardDescription>
             </CardHeader>
             <CardContent className="p-5 pt-4 space-y-4">
@@ -329,7 +329,7 @@ function SettingsPage() {
             <CardHeader className="p-5 pb-3 border-b-2 border-border/40">
               <CardTitle className="text-xs font-mono font-bold uppercase tracking-wider">Notification Preferences</CardTitle>
               <CardDescription className="text-xs">
-                Configure how and when CareerOS keeps you updated during your search.
+                Configure how and when Riseline keeps you updated during your search.
               </CardDescription>
             </CardHeader>
             <CardContent className="p-5 pt-4 space-y-4">
@@ -390,7 +390,7 @@ function SettingsPage() {
             <CardHeader className="p-5 pb-3 border-b-2 border-border/40">
               <CardTitle className="text-xs font-mono font-bold uppercase tracking-wider">Connected Services</CardTitle>
               <CardDescription className="text-xs">
-                Synchronize your professional accounts and calendar with CareerOS.
+                Synchronize your professional accounts and calendar with Riseline.
               </CardDescription>
             </CardHeader>
             <CardContent className="p-5 pt-4 space-y-4">

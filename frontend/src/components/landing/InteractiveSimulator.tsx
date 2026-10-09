@@ -118,7 +118,7 @@ export function InteractiveSimulator() {
             </span>
           </div>
           <h3 className="text-xl sm:text-2xl font-bold text-foreground mt-1.5 tracking-tight">
-            See how CareerOS turns a 45% rejection into a 95% match
+            See how Riseline turns a 45% rejection into a 95% match
           </h3>
         </div>
 
@@ -251,7 +251,7 @@ export function InteractiveSimulator() {
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] font-mono uppercase tracking-wider text-emerald-400 font-semibold flex items-center gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    CareerOS Derived Version Refactor (Target-aligned metrics)
+                    Riseline Derived Version Refactor (Target-aligned metrics)
                   </span>
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950/50 border border-emerald-700/50 text-emerald-300 font-medium">
                     {scenario.diffPreview.impact}
@@ -272,7 +272,7 @@ export function InteractiveSimulator() {
             <div className="mt-4 flex items-center gap-2 text-xs text-muted-foreground bg-surface-elevated/60 border border-border/60 rounded-lg p-2.5">
               <ShieldCheck className="w-4 h-4 text-primary shrink-0" />
               <span className="leading-tight text-[11px]">
-                <strong className="text-foreground">Deterministic Guardrails:</strong> CareerOS
+                <strong className="text-foreground">Deterministic Guardrails:</strong> Riseline
                 preserves your real career history and never invents employers, fake dates, or
                 hallucinated credentials.
               </span>

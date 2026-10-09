@@ -1,6 +1,6 @@
 name: Resume Studio Standing Regression Guard
 
-# Monorepo: backend lives under backend/ (migrated from careeros-backend-py via git subtree).
+# Monorepo: backend lives under backend/ (migrated from backend via git subtree).
 
 on:
   push:

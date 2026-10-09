@@ -1,6 +1,6 @@
 name: Backend Hermetic Test Suite
 
-# Monorepo: backend lives under backend/ (migrated from careeros-backend-py via git subtree).
+# Monorepo: backend lives under backend/ (migrated from backend via git subtree).
 # working-directory is backend/ so `pip install -r requirements.txt` and `pytest`
 # resolve correctly in the monorepo layout.
 

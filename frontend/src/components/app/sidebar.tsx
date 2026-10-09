@@ -140,7 +140,7 @@ export function AppSidebar() {
           <div className="flex min-w-0 flex-col leading-tight group-data-[collapsible=icon]:hidden">
             <div className="flex items-center gap-1.5">
               <span className="truncate text-sm font-bold tracking-tight text-foreground">
-                CareerOS
+                Riseline
               </span>
               <span className="text-[11px] font-semibold px-1.5 py-px rounded border border-brand/40 bg-brand-subtle text-brand">
                 PRO

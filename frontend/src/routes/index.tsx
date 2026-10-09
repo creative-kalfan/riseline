@@ -5,11 +5,11 @@ import { CinematicSceneController } from "../components/landing/CinematicSceneCo
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "CareerOS — Career Intelligence & Safe Resume Optimization" },
+      { title: "Riseline — Career Intelligence & Safe Resume Optimization" },
       {
         name: "description",
         content:
-          "Stop guessing what jobs want. CareerOS deconstructs target job requirements, diagnoses resume gaps, and creates truth-preserving optimized versions.",
+          "Stop guessing what jobs want. Riseline deconstructs target job requirements, diagnoses resume gaps, and creates truth-preserving optimized versions.",
       },
     ],
   }),

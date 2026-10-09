@@ -31,7 +31,7 @@ import { useDashboardTelemetry, mapTelemetryToTimeline } from "@/hooks/api/useDa
 export const Route = createFileRoute("/_app/dashboard")({
   head: () => ({
     meta: [
-      { title: "Command Center · CareerOS" },
+      { title: "Command Center · Riseline" },
       {
         name: "description",
         content:

@@ -4,7 +4,7 @@ import { ResumeTemplatesPage } from "@/components/resume/templates/resume-templa
 export const Route = createFileRoute("/_app/resumes/templates")({
   head: () => ({
     meta: [
-      { title: "Resume Templates · CareerOS" },
+      { title: "Resume Templates · Riseline" },
       {
         name: "description",
         content: "Choose a professional resume template to showcase your career.",

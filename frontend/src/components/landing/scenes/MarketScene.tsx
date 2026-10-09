@@ -65,7 +65,7 @@ export function MarketScene() {
           Target opportunities where your proof is strongest.
         </h2>
         <p className="text-xs sm:text-sm text-[#A8A49A] mt-1 leading-relaxed">
-          CareerOS connects your verified profile to active roles — ranking openings by technical
+          Riseline connects your verified profile to active roles — ranking openings by technical
           alignment and proof completeness.
         </p>
       </div>

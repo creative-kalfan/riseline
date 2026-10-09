@@ -8,7 +8,7 @@ const __dirname = path.dirname(__filename);
 const outDir = path.resolve(__dirname, "../../playwright/screenshots/auth_redesign");
 fs.mkdirSync(outDir, { recursive: true });
 
-test.describe("CareerOS Auth Experience Redesign Verification", () => {
+test.describe("Riseline Auth Experience Redesign Verification", () => {
   // Use unauthenticated context for auth flow testing
   test.use({ storageState: { cookies: [], origins: [] } });
 
@@ -22,7 +22,7 @@ test.describe("CareerOS Auth Experience Redesign Verification", () => {
     // Positioning headline
     await expect(page.getByRole("heading", { name: "Your next application" })).toBeVisible();
     await expect(page.getByText("starts here.")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Sign in to CareerOS" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sign in to Riseline" })).toBeVisible();
 
     // Value points
     await expect(page.getByText("One verified profile.")).toBeVisible();
@@ -37,7 +37,7 @@ test.describe("CareerOS Auth Experience Redesign Verification", () => {
 
     await expect(emailInput).toBeVisible();
     await expect(passwordInput).toBeVisible();
-    await expect(submitButton).toContainText("Continue to CareerOS");
+    await expect(submitButton).toContainText("Continue to Riseline");
 
     // Password toggle test
     await passwordInput.fill("SecretPassword123!");
@@ -82,7 +82,7 @@ test.describe("CareerOS Auth Experience Redesign Verification", () => {
     await expect(nameInput).toBeVisible();
     await expect(emailInput).toBeVisible();
     await expect(passwordInput).toBeVisible();
-    await expect(submitButton).toContainText("Create my CareerOS profile");
+    await expect(submitButton).toContainText("Create my Riseline profile");
 
     await nameInput.fill("Jane Doe");
     await emailInput.fill("jane.doe@example.com");
@@ -132,7 +132,7 @@ test.describe("CareerOS Auth Experience Redesign Verification", () => {
     await page.setViewportSize({ width: 1366, height: 768 });
     await page.goto("/login");
     await page.waitForLoadState("domcontentloaded");
-    await expect(page.getByRole("heading", { name: "Sign in to CareerOS" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sign in to Riseline" })).toBeVisible();
     await page.screenshot({ path: path.join(outDir, "login_1366x768.png") });
 
     await page.goto("/signup");
@@ -169,7 +169,7 @@ test.describe("CareerOS Auth Experience Redesign Verification", () => {
     let scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
     let clientWidth = await page.evaluate(() => document.documentElement.clientWidth);
     expect(scrollWidth).toBeLessThanOrEqual(clientWidth + 2);
-    await expect(page.getByRole("heading", { name: "Sign in to CareerOS" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sign in to Riseline" })).toBeVisible();
     await page.screenshot({ path: path.join(outDir, "login_mobile_390x844.png"), fullPage: true });
 
     await page.goto("/signup");

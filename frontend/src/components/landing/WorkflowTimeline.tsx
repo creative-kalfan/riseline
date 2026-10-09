@@ -22,7 +22,7 @@ const STEPS: Step[] = [
     problem:
       "Recruiter job descriptions are filled with buzzwords, unstated prerequisites, and hidden automated filters.",
     solution:
-      "CareerOS parses the job description, extracts exact required technologies, experience weightings, and core competency vectors.",
+      "Riseline parses the job description, extracts exact required technologies, experience weightings, and core competency vectors.",
     telemetry: "OUTPUT: 14 HARD SKILLS // 4 DOMAIN REQUIREMENTS // SALARY RANGE",
   },
   {
@@ -58,7 +58,7 @@ const STEPS: Step[] = [
     problem:
       "Editing your master resume constantly leaves you with 40 chaotic files named 'Resume_Final_v3_Google.pdf'.",
     solution:
-      "Maintain one Master Resume. CareerOS generates derived versions per job, applying surgical bullet-point refactors with diff previews.",
+      "Maintain one Master Resume. Riseline generates derived versions per job, applying surgical bullet-point refactors with diff previews.",
     telemetry: "OUTPUT: MASTER PRESERVED // TARGET-OPTIMIZED DERIVED VERSION",
   },
   {

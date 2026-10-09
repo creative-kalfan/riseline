@@ -11,7 +11,7 @@ import { createFileRoute, Navigate } from "@tanstack/react-router";
  */
 export const Route = createFileRoute("/_app/ats")({
   head: () => ({
-    meta: [{ title: "Resume Studio · CareerOS" }],
+    meta: [{ title: "Resume Studio · Riseline" }],
   }),
   component: AtsRedirect,
 });

@@ -16,11 +16,11 @@ import {
 export const Route = createFileRoute("/_auth/signup")({
   head: () => ({
     meta: [
-      { title: "Sign Up · CareerOS" },
+      { title: "Sign Up · Riseline" },
       {
         name: "description",
         content:
-          "Create your CareerOS profile to build your verified career intelligence workspace.",
+          "Create your Riseline profile to build your verified career intelligence workspace.",
       },
     ],
   }),
@@ -87,7 +87,7 @@ function SignupPage() {
         </h1>
 
         <p className="text-sm sm:text-base text-muted-foreground leading-relaxed mt-3 sm:mt-4 max-w-lg">
-          Create your CareerOS profile and turn your experience into a career system you can
+          Create your Riseline profile and turn your experience into a career system you can
           continuously improve.
         </p>
 
@@ -224,7 +224,7 @@ function SignupPage() {
                 </>
               ) : (
                 <>
-                  <span>Create my CareerOS profile</span>
+                  <span>Create my Riseline profile</span>
                   <ArrowRight className="w-4 h-4" />
                 </>
               )}

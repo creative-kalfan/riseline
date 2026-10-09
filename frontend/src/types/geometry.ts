@@ -1,5 +1,5 @@
 /**
- * Document Geometry types for CareerOS Resume Studio.
+ * Document Geometry types for Riseline Resume Studio.
  * Matches backend PyMuPDF spatial extraction models.
  */
 

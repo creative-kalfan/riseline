@@ -153,7 +153,7 @@ export function DiagnosisScene() {
           See why your resume isn't getting interviews.
         </h2>
         <p className="text-[11px] sm:text-xs text-[#A8A49A] mt-0.5 leading-normal max-w-lg mx-auto">
-          CareerOS maps your resume against target requirements — identifying what is proven, what
+          Riseline maps your resume against target requirements — identifying what is proven, what
           is weak, and what is missing.
         </p>
       </div>

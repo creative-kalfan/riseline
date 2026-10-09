@@ -11,7 +11,7 @@ export function LandingNav() {
             <Compass className="w-4 h-4" />
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-base font-bold tracking-tight text-foreground font-mono">CareerOS</span>
+            <span className="text-base font-bold tracking-tight text-foreground font-mono">Riseline</span>
             <span className="hidden sm:inline text-[11px] font-semibold px-2 py-0.5 rounded-md bg-surface-elevated border-2 border-border text-muted-foreground font-mono uppercase">
               Career Intelligence
             </span>

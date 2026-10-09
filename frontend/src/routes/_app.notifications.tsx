@@ -40,7 +40,7 @@ import {
 export const Route = createFileRoute("/_app/notifications")({
   head: () => ({
     meta: [
-      { title: "Notifications · CareerOS" },
+      { title: "Notifications · Riseline" },
       {
         name: "description",
         content: "Event-driven, preference-aware alerts across the platform.",

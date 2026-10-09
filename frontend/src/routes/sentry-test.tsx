@@ -5,7 +5,7 @@ import { initSentry } from "../lib/sentry";
 export const Route = createFileRoute("/sentry-test")({
   head: () => ({
     meta: [
-      { title: "CareerOS — Sentry Test" },
+      { title: "Riseline — Sentry Test" },
       {
         name: "description",
         content: "Sentry error reporting test page",

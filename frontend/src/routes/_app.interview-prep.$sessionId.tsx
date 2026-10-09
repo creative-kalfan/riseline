@@ -20,7 +20,7 @@ import type { InterviewPrepQuestion } from "@/types/interview-prep";
 
 export const Route = createFileRoute("/_app/interview-prep/$sessionId")({
   head: () => ({
-    meta: [{ title: "Interview Prep Session · CareerOS" }],
+    meta: [{ title: "Interview Prep Session · Riseline" }],
   }),
   component: InterviewPrepSessionPage,
 });

@@ -1,5 +1,5 @@
 // src/lib/motion.ts
-// Shared motion variants for CareerOS spatial UI
+// Shared motion variants for Riseline spatial UI
 // All durations in seconds. Respects prefers-reduced-motion via Framer Motion's built-in support.
 
 import type { Variants, Transition } from "framer-motion";

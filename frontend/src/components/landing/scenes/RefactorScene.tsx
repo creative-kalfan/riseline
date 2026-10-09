@@ -38,7 +38,7 @@ export function RefactorScene() {
           Sharpen what you did. Never invent what you didn't.
         </h2>
         <p className="text-xs sm:text-sm text-[#A8A49A] mt-1 leading-relaxed">
-          CareerOS generates role-specific derived versions from your master profile — restructuring
+          Riseline generates role-specific derived versions from your master profile — restructuring
           verified proof without fabricating experience.
         </p>
       </div>
@@ -158,7 +158,7 @@ export function RefactorScene() {
                 Strict Truth-Preserving Guarantee
               </div>
               <p className="text-[11px] text-[#A8A49A] mt-0.5 leading-relaxed">
-                CareerOS never hallucinates employers, fake degrees, or unearned credentials. Every
+                Riseline never hallucinates employers, fake degrees, or unearned credentials. Every
                 bullet is strictly grounded in candidate facts.
               </p>
             </div>

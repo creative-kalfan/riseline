@@ -73,7 +73,7 @@ export const Route = createFileRoute("/_app/resumes/$id")({
   },
   head: () => ({
     meta: [
-      { title: "Resume Studio · CareerOS" },
+      { title: "Resume Studio · Riseline" },
       {
         name: "description",
         content: "AI-powered resume optimization with targeted suggestions and ATS analysis.",

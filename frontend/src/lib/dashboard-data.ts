@@ -362,7 +362,7 @@ export const achievements: Achievement[] = [
   {
     id: "a-1",
     title: "First resume uploaded",
-    detail: "Kicked off your CareerOS journey.",
+    detail: "Kicked off your Riseline journey.",
     earned: true,
     earnedAt: "3 weeks ago",
     tier: "bronze",

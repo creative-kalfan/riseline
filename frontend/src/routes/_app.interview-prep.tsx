@@ -27,7 +27,7 @@ export const Route = createFileRoute("/_app/interview-prep")({
   }),
   head: () => ({
     meta: [
-      { title: "Interview Prep · CareerOS" },
+      { title: "Interview Prep · Riseline" },
       {
         name: "description",
         content:

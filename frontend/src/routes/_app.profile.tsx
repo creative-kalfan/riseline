@@ -23,10 +23,10 @@ type Profile = {
 export const Route = createFileRoute("/_app/profile")({
   head: () => ({
     meta: [
-      { title: "Profile · CareerOS" },
+      { title: "Profile · Riseline" },
       {
         name: "description",
-        content: "Manage your CareerOS profile.",
+        content: "Manage your Riseline profile.",
       },
     ],
   }),

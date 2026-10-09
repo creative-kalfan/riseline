@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 
-/** Reusable skeleton primitives for consistent loading states across CareerOS. */
+/** Reusable skeleton primitives for consistent loading states across Riseline. */
 
 export function SkeletonCard({ className, lines = 3 }: { className?: string; lines?: number }) {
   return (

@@ -18,7 +18,7 @@ import { Progress } from "@/components/ui/progress";
 export const Route = createFileRoute("/_app/onboarding")({
   head: () => ({
     meta: [
-      { title: "Onboarding · CareerOS" },
+      { title: "Onboarding · Riseline" },
       { name: "description", content: "Complete your profile setup" },
     ],
   }),
@@ -191,7 +191,7 @@ function OnboardingStep({
       return (
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            Welcome to CareerOS! We'll help you set up your profile in just a few steps. This will
+            Welcome to Riseline! We'll help you set up your profile in just a few steps. This will
             help us provide personalized job recommendations and optimize your resume.
           </p>
         </div>
@@ -302,7 +302,7 @@ function OnboardingStep({
       return (
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            You're all set! Click "Complete" to start using CareerOS.
+            You're all set! Click "Complete" to start using Riseline.
           </p>
         </div>
       );

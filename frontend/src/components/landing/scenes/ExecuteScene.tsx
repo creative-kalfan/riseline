@@ -27,7 +27,7 @@ export function ExecuteScene() {
       </h2>
 
       <p className="text-xs sm:text-sm lg:text-base text-[#A8A49A] max-w-xl mx-auto mt-3 sm:mt-4 leading-relaxed">
-        CareerOS transforms application guesswork into a verifiable, evidence-backed strategy.
+        Riseline transforms application guesswork into a verifiable, evidence-backed strategy.
         Target roles where your experience genuinely shines.
       </p>
 
@@ -74,7 +74,7 @@ export function ExecuteScene() {
         <span className="text-[#302E29]">|</span>
         <span>Deterministic Matching</span>
         <span className="text-[#302E29]">|</span>
-        <span>© {new Date().getFullYear()} CareerOS</span>
+        <span>© {new Date().getFullYear()} Riseline</span>
       </div>
     </div>
   );

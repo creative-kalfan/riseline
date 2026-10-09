@@ -11,7 +11,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 export const Route = createFileRoute("/admin")({
   head: () => ({
     meta: [
-      { title: "Admin Portal · CareerOS" },
+      { title: "Admin Portal · Riseline" },
       {
         name: "description",
         content: "Platform administration and analytics dashboard.",

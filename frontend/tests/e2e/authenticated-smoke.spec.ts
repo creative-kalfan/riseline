@@ -8,7 +8,7 @@ const __dirname = path.dirname(__filename);
 const screenshotsDir = path.resolve(__dirname, "../../playwright/screenshots");
 fs.mkdirSync(screenshotsDir, { recursive: true });
 
-test.describe("CareerOS Authenticated Visual Smoke Test", () => {
+test.describe("Riseline Authenticated Visual Smoke Test", () => {
   test("session restores and loads Dashboard without redirect to login", async ({ page }) => {
     await page.goto("/dashboard");
     await page.waitForLoadState("domcontentloaded");

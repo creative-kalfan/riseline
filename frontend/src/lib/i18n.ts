@@ -1,4 +1,4 @@
-// i18n string scaffolding for CareerOS frontend.
+// i18n string scaffolding for Riseline frontend.
 //
 // Centralizes key-based dictionary lookups so strings are never hardcoded
 // across components without translation capability.

@@ -91,7 +91,7 @@ import { MonthCalendar } from "@/components/mission/calendar";
 export const Route = createFileRoute("/_app/applications")({
   head: () => ({
     meta: [
-      { title: "Mission Control · CareerOS" },
+      { title: "Mission Control · Riseline" },
       {
         name: "description",
         content:

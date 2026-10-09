@@ -35,7 +35,7 @@ export function LandingFooter() {
             <div className="w-6 h-6 rounded bg-primary/20 flex items-center justify-center text-primary">
               <Terminal className="w-3.5 h-3.5" />
             </div>
-            <span className="text-sm font-bold text-foreground">CareerOS</span>
+            <span className="text-sm font-bold text-foreground">Riseline</span>
           </div>
           <p className="text-xs text-muted-foreground max-w-sm leading-relaxed">
             The AI Career Operating System. Deconstruct target roles, vectorize resume intelligence,
@@ -95,7 +95,7 @@ export function LandingFooter() {
 
       {/* Copyright */}
       <div className="border-t border-border/40 py-6 px-4 text-center text-[11px] text-muted-foreground font-mono">
-        © {new Date().getFullYear()} CareerOS Studio. Built for candidates tired of guessing.
+        © {new Date().getFullYear()} Riseline Studio. Built for candidates tired of guessing.
       </div>
     </footer>
   );

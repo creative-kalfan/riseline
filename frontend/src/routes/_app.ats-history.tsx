@@ -25,7 +25,7 @@ import { useQuery } from "@tanstack/react-query";
 export const Route = createFileRoute("/_app/ats-history")({
   head: () => ({
     meta: [
-      { title: "ATS History · CareerOS" },
+      { title: "ATS History · Riseline" },
       { name: "description", content: "View your ATS analysis history across all resumes." },
     ],
   }),

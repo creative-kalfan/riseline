@@ -22,7 +22,7 @@ import { formatDate } from "@/utils/date";
 export const Route = createFileRoute("/_app/resumes/")({
   head: () => ({
     meta: [
-      { title: "Resume Studio · CareerOS" },
+      { title: "Resume Studio · Riseline" },
       {
         name: "description",
         content:
@@ -42,7 +42,7 @@ function ResumesPage() {
       <PageHeader
         eyebrow="Workspace"
         title="Turn your resume into a job-winning application"
-        description="Upload your resume, add a target job, and CareerOS analyzes what to improve — while preserving your resume's original look and structure."
+        description="Upload your resume, add a target job, and Riseline analyzes what to improve — while preserving your resume's original look and structure."
       />
 
       {/* Primary Intent Cards */}

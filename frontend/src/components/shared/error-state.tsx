@@ -15,7 +15,7 @@ export interface ErrorStateProps {
 }
 
 /**
- * Standardized error state container for clean, unified error handling across CareerOS.
+ * Standardized error state container for clean, unified error handling across Riseline.
  */
 export function ErrorState({
   icon: Icon = AlertCircle,

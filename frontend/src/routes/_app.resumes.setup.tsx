@@ -24,7 +24,7 @@ type SetupPageSearch = {
 export const Route = createFileRoute("/_app/resumes/setup")({
   head: () => ({
     meta: [
-      { title: "Resume Setup · CareerOS" },
+      { title: "Resume Setup · Riseline" },
       {
         name: "description",
         content: "Set up your resume profile to get started with AI-powered job matching.",
@@ -81,7 +81,7 @@ function ResumeSetupPage() {
         <PageHeader
           eyebrow="Workspace"
           title="Optimize my resume for a job"
-          description="Upload your resume and add a target job description. CareerOS will analyze what to improve while preserving your resume's original look and structure."
+          description="Upload your resume and add a target job description. Riseline will analyze what to improve while preserving your resume's original look and structure."
         />
 
         <div className="grid gap-5 sm:grid-cols-2">
@@ -108,7 +108,7 @@ function ResumeSetupPage() {
                 <h2 className="text-base font-semibold tracking-tight">Target job</h2>
               </div>
               <p className="mt-1.5 text-xs text-muted-foreground leading-relaxed">
-                Add the job you&apos;re targeting so CareerOS can tailor your resume.
+                Add the job you&apos;re targeting so Riseline can tailor your resume.
               </p>
             </div>
 

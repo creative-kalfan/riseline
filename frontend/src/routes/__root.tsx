@@ -80,16 +80,16 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "CareerOS — AI Career Operating System" },
+      { title: "Riseline — AI Career Operating System" },
       {
         name: "description",
         content:
-          "CareerOS is the AI Career Operating System — a premium workspace for resumes, ATS optimization, job intelligence and applications.",
+          "Riseline is the AI Career Operating System — a premium workspace for resumes, ATS optimization, job intelligence and applications.",
       },
-      { name: "author", content: "CareerOS" },
+      { name: "author", content: "Riseline" },
       { name: "theme-color", media: "(prefers-color-scheme: light)", content: "#F4F6F7" },
       { name: "theme-color", media: "(prefers-color-scheme: dark)", content: "#0F1A22" },
-      { property: "og:title", content: "CareerOS — AI Career Operating System" },
+      { property: "og:title", content: "Riseline — AI Career Operating System" },
       {
         property: "og:description",
         content:

@@ -31,7 +31,7 @@ function runSeed(): SeedResult {
   return JSON.parse(jsonLine) as SeedResult;
 }
 
-test.describe("CareerOS Real Browser Audit #1", () => {
+test.describe("Riseline Real Browser Audit #1", () => {
   test("Resume -> ATS -> AI Suggestions -> Apply -> Re-Analyze -> Persistence", async ({
     page,
   }) => {

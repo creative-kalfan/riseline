@@ -9,7 +9,7 @@ export function AuthLoadingSpinner() {
         </div>
         <div className="flex items-center gap-2 text-xs text-[#A8A49A]">
           <Loader2 className="h-3.5 w-3.5 animate-spin text-[#315CFF]" />
-          <span>Loading CareerOS workspace...</span>
+          <span>Loading Riseline workspace...</span>
         </div>
       </div>
     </div>

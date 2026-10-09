@@ -951,7 +951,7 @@ export function LeftPane({
               {!tailorResult && !tailorMutation.isPending && isCurrentVersionTailored && (
                 <div className="w-full min-w-0 space-y-2.5">
                   <p className="text-xs text-muted-foreground whitespace-normal break-words leading-relaxed">
-                    Tailor your entire resume to match this role. CareerOS maps job requirements and crafts high-impact bullet points.
+                    Tailor your entire resume to match this role. Riseline maps job requirements and crafts high-impact bullet points.
                   </p>
                   <Button
                     type="button"
@@ -978,7 +978,7 @@ export function LeftPane({
               {!tailorResult && !isCurrentVersionTailored && (
                 <div className="w-full min-w-0 space-y-2.5">
                   <p className="text-xs text-muted-foreground whitespace-normal break-words leading-relaxed">
-                    Tailor your entire resume to match this role. CareerOS maps job requirements and crafts high-impact bullet points.
+                    Tailor your entire resume to match this role. Riseline maps job requirements and crafts high-impact bullet points.
                   </p>
                   <Button
                     type="button"

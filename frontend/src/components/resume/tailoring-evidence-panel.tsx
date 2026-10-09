@@ -27,7 +27,7 @@ import type { TailoringPlanItem } from "@/types/optimization";
  * Friendly batch evidence discovery panel for Resume Studio.
  *
  * One compact interaction: the candidate selects every area they have
- * actually worked with, answers once in their own words, and CareerOS
+ * actually worked with, answers once in their own words, and Riseline
  * re-tailors the resume and shows the before/after match. Skippable,
  * batched (never one question per skill), and free of auditor language —
  * all candidate-facing copy comes from the backend translation layer.

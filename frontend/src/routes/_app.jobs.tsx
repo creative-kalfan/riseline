@@ -76,7 +76,7 @@ export const Route = createFileRoute("/_app/jobs")({
 
   head: () => ({
     meta: [
-      { title: "Job Intelligence · CareerOS" },
+      { title: "Job Intelligence · Riseline" },
       {
         name: "description",
         content:

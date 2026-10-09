@@ -57,7 +57,7 @@ test.describe("Job → Resume Studio Bridge Real E2E Verification", () => {
     });
 
     async function waitForWorkspace() {
-      const spinner = page.locator("text=Loading CareerOS workspace");
+      const spinner = page.locator("text=Loading Riseline workspace");
       if (await spinner.isVisible().catch(() => false)) {
         await spinner.waitFor({ state: "detached", timeout: 20000 });
       }

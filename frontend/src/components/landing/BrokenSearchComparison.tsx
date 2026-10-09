@@ -11,7 +11,7 @@ export function BrokenSearchComparison() {
           Stop treating job hunting like a lottery ticket.
         </h2>
         <p className="text-sm text-muted-foreground mt-2">
-          Submitting 400 uncalibrated resumes into ATS filters is statistically hopeless. CareerOS
+          Submitting 400 uncalibrated resumes into ATS filters is statistically hopeless. Riseline
           replaces random volume with engineered precision.
         </p>
       </div>
@@ -67,7 +67,7 @@ export function BrokenSearchComparison() {
           </div>
         </div>
 
-        {/* The CareerOS Way */}
+        {/* The Riseline Way */}
         <div className="rounded-2xl border border-primary/60 bg-surface/90 p-6 sm:p-7 relative overflow-hidden flex flex-col justify-between shadow-xl ring-1 ring-primary/20">
           <div className="absolute top-0 right-0 w-32 h-32 bg-primary/10 blur-3xl pointer-events-none" />
 

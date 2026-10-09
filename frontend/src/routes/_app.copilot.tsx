@@ -25,7 +25,7 @@ import { getErrorMessage, isApiError } from "@/utils/api-error";
 export const Route = createFileRoute("/_app/copilot")({
   head: () => ({
     meta: [
-      { title: "AI Copilot · CareerOS" },
+      { title: "AI Copilot · Riseline" },
       {
         name: "description",
         content:

@@ -16,10 +16,10 @@ import {
 export const Route = createFileRoute("/_auth/login")({
   head: () => ({
     meta: [
-      { title: "Sign In · CareerOS" },
+      { title: "Sign In · Riseline" },
       {
         name: "description",
-        content: "Sign in to access your CareerOS intelligence workspace.",
+        content: "Sign in to access your Riseline intelligence workspace.",
       },
     ],
   }),
@@ -120,7 +120,7 @@ function LoginPage() {
         <div className="rounded-lg border-2 border-border bg-surface p-6 sm:p-8 shadow-brutal-sm">
           <div className="mb-6">
             <h2 className="text-xl font-bold tracking-tight text-foreground font-mono">
-              Sign in to CareerOS
+              Sign in to Riseline
             </h2>
             <p className="mt-1 text-xs text-muted-foreground">Access your career intelligence workspace</p>
           </div>
@@ -202,7 +202,7 @@ function LoginPage() {
                 </>
               ) : (
                 <>
-                  <span>Continue to CareerOS</span>
+                  <span>Continue to Riseline</span>
                   <ArrowRight className="w-4 h-4" />
                 </>
               )}
@@ -210,7 +210,7 @@ function LoginPage() {
           </form>
 
           <div className="mt-6 pt-5 border-t-2 border-border text-center text-xs text-muted-foreground">
-            New to CareerOS?{" "}
+            New to Riseline?{" "}
             <Link
               to="/signup"
               className="font-semibold text-primary hover:underline transition-colors inline-flex items-center gap-1 font-mono"

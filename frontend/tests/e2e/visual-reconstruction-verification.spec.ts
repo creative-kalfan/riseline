@@ -19,7 +19,7 @@ const routes = [
   { name: "08_settings", path: "/settings" },
 ];
 
-test.describe("CareerOS Reconstructed Visual & Interaction Verification", () => {
+test.describe("Riseline Reconstructed Visual & Interaction Verification", () => {
   for (const r of routes) {
     test(`Verify & capture desktop ${r.name}`, async ({ page }) => {
       await page.setViewportSize({ width: 1440, height: 900 });

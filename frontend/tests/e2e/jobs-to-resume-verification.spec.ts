@@ -60,7 +60,7 @@ test.describe("Complete Jobs → Resume Optimization E2E Workflow Verification",
 
     // ── Helper: wait for auth loading spinner ──
     async function waitForWorkspace() {
-      const spinner = page.locator("text=Loading CareerOS workspace");
+      const spinner = page.locator("text=Loading Riseline workspace");
       if (await spinner.isVisible().catch(() => false)) {
         await spinner.waitFor({ state: "detached", timeout: 20000 });
       }

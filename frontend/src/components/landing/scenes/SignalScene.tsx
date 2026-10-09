@@ -69,7 +69,7 @@ export function SignalScene() {
           Deconstruct the job description first.
         </h2>
         <p className="text-[11px] sm:text-xs text-[#A8A49A] mt-1 leading-normal max-w-lg mx-auto">
-          CareerOS parses postings into structured evaluation criteria — weighting required skills,
+          Riseline parses postings into structured evaluation criteria — weighting required skills,
           architecture patterns, and domain competencies.
         </p>
       </div>

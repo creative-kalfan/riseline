@@ -95,7 +95,7 @@ function AuthLayout() {
             </div>
             <div className="flex items-center gap-2">
               <span className="text-base font-bold tracking-tight text-foreground font-mono">
-                CareerOS
+                Riseline
               </span>
               <span className="hidden sm:inline text-[10px] font-mono uppercase font-semibold px-2 py-0.5 rounded-md bg-surface-elevated border border-border text-muted-foreground">
                 Career Intelligence
@@ -131,7 +131,7 @@ function AuthLayout() {
           <span className="text-border">·</span>
           <span>Role-Specific Applications</span>
           <span className="text-border">·</span>
-          <span>© {new Date().getFullYear()} CareerOS</span>
+          <span>© {new Date().getFullYear()} Riseline</span>
         </div>
       </footer>
     </div>

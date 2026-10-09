@@ -8,7 +8,7 @@ const __dirname = path.dirname(__filename);
 const outputDir = path.resolve(__dirname, "../../playwright/screenshots/interaction");
 fs.mkdirSync(outputDir, { recursive: true });
 
-test.describe("CareerOS Interactive Flagship Verification", () => {
+test.describe("Riseline Interactive Flagship Verification", () => {
   test.beforeEach(async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
   });

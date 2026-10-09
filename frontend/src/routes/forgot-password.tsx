@@ -6,8 +6,8 @@ import { ArrowRight, AlertCircle, Loader2, Compass, ArrowLeft, MailCheck } from 
 export const Route = createFileRoute("/forgot-password")({
   head: () => ({
     meta: [
-      { title: "Reset Password · CareerOS" },
-      { name: "description", content: "Reset your CareerOS account password." },
+      { title: "Reset Password · Riseline" },
+      { name: "description", content: "Reset your Riseline account password." },
     ],
   }),
   component: ForgotPasswordPage,
@@ -52,7 +52,7 @@ function ForgotPasswordPage() {
             </div>
             <div className="flex items-center gap-2">
               <span className="text-base font-bold tracking-tight text-foreground font-mono">
-                CareerOS
+                Riseline
               </span>
               <span className="hidden sm:inline text-[11px] font-semibold px-2 py-0.5 rounded-md bg-surface-elevated border-2 border-border text-muted-foreground font-mono uppercase">
                 Career Intelligence

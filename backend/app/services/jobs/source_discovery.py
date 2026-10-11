@@ -91,7 +91,7 @@ async def discover_ats_targets(ctx: dict[str, Any]) -> dict[str, int]:
     try:
         candidates = await asyncio.to_thread(lambda: client.table("crawl_targets").select(
             "source,slug"
-        ).eq("status", "candidate").or_(f"last_discovery_probe_at.is.null,last_discovery_probe_at.lt.{today}T00:00:00Z").limit(
+        ).eq("status", "candidate").or_(f"last_attempt_at.is.null,last_attempt_at.lt.{today}T00:00:00Z").limit(
             settings.discovery_max_probes_per_day
         ).execute().data or [])
     except Exception as exc:
@@ -102,7 +102,7 @@ async def discover_ats_targets(ctx: dict[str, Any]) -> dict[str, int]:
         source, slug = row["source"], row["slug"]
         outcome = await _probe(source, slug)
         probed += 1
-        update = {"last_discovery_probe_at": datetime.now(timezone.utc).isoformat()}
+        update = {"last_attempt_at": datetime.now(timezone.utc).isoformat()}
         if outcome != "retry":
             update.update({"status": outcome, "next_run_at": datetime.now(timezone.utc).isoformat()})
         await asyncio.to_thread(lambda s=source, l=slug, values=update: client.table("crawl_targets").update(values).eq("source", s).eq("slug", l).eq("status", "candidate").execute())

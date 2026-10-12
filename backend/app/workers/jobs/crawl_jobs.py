@@ -246,7 +246,13 @@ async def _dispatch_ingest(
     description="Crawl jobs for a single ATS source/company.",
     workload_class=WorkloadClass.CRAWL,
 )
-async def crawl_company_job(ctx: dict[str, Any], source: str, slug: str) -> dict[str, Any]:
+async def crawl_company_job(
+    ctx: dict[str, Any],
+    source: str,
+    slug: str,
+    target_id: Optional[Any] = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
     """Crawl jobs for a single ATS source/company.
 
     Payload:
@@ -618,6 +624,7 @@ async def crawl_company_job(ctx: dict[str, Any], source: str, slug: str) -> dict
         status_payload = {
             "source": source,
             "slug": slug,
+            "target_id": target_id,
             "status": result.get("status", "success"),
             "phase": current_phase,
             "started_at": crawl_started_at,
@@ -657,6 +664,7 @@ async def crawl_company_job(ctx: dict[str, Any], source: str, slug: str) -> dict
                 fetch_ms=provider_ms,
                 persist_wait_ms=result.get("async_wait_ms", 0),
                 persist_hold_ms=result.get("async_hold_ms", 0),
+                target_id=target_id,
                 error_type=result.get("error"),
                 anomaly_reason=result.get("anomaly_reason"),
             )
@@ -668,6 +676,7 @@ async def crawl_company_job(ctx: dict[str, Any], source: str, slug: str) -> dict
             "status": result.get("status", "success"),
             "source": source,
             "slug": slug,
+            "target_id": target_id,
             "result": result,
             "deactivated": deactivated_not_seen + deactivated,
             "deactivated_not_seen": deactivated_not_seen,
@@ -711,6 +720,7 @@ async def crawl_company_job(ctx: dict[str, Any], source: str, slug: str) -> dict
             {
                 "source": source,
                 "slug": slug,
+                "target_id": target_id,
                 "status": "cancelled",
                 "phase": current_phase,
                 "started_at": crawl_started_at,
@@ -718,6 +728,28 @@ async def crawl_company_job(ctx: dict[str, Any], source: str, slug: str) -> dict
                 "duration_ms": duration_ms,
             },
         )
+        try:
+            from app.repositories.observability_repository import ObservabilityRepository
+            obs_repo = ObservabilityRepository()
+            cancelled_at_iso = datetime.now(timezone.utc).isoformat()
+            await asyncio.to_thread(
+                obs_repo.record_crawl_run,
+                source=source,
+                slug=slug,
+                started_at=crawl_started_at,
+                finished_at=cancelled_at_iso,
+                status="cancelled",
+                discovered=0,
+                inserted=0,
+                updated=0,
+                unchanged=0,
+                deactivated=0,
+                fetch_ms=provider_ms,
+                target_id=target_id,
+                error_type="JobCancelled",
+            )
+        except Exception as obs_exc:
+            logger.warning("Observability recording cancelled run skipped (non-blocking): %s", obs_exc)
         raise
     except Exception as exc:
         cancel_event.set()
@@ -767,6 +799,7 @@ async def crawl_company_job(ctx: dict[str, Any], source: str, slug: str) -> dict
             {
                 "source": source,
                 "slug": slug,
+                "target_id": target_id,
                 "status": "failed",
                 "phase": current_phase,
                 "started_at": crawl_started_at,
@@ -791,6 +824,7 @@ async def crawl_company_job(ctx: dict[str, Any], source: str, slug: str) -> dict
                 unchanged=0,
                 deactivated=0,
                 fetch_ms=provider_ms,
+                target_id=target_id,
                 error_type=exc.__class__.__name__,
             )
         except Exception as obs_exc:

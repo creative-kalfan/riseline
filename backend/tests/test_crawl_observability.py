@@ -245,3 +245,194 @@ async def test_crawl_company_job_anomaly_detection_skips_deactivation_and_alerts
         mock_deact.assert_not_called()
         mock_sentry.assert_called_once()
         assert "Crawl anomaly detected" in mock_sentry.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_crawl_company_job_target_id_persisted_on_success():
+    """Verify target-triggered crawl records its exact target_id in crawl_runs and status."""
+    ctx = {"job_id": "job-test-target-success"}
+
+    mock_ingestion = MagicMock()
+    mock_ingestion.ingest_greenhouse_jobs = AsyncMock(
+        return_value={"discovered": 407, "inserted": 0, "updated": 407, "unchanged": 0}
+    )
+    mock_ingestion.job_repository = MagicMock()
+    mock_prev_res = MockExecuteResult(count=407)
+    mock_table = MagicMock()
+    mock_table.select.return_value.eq.return_value.eq.return_value.eq.return_value.execute.return_value = mock_prev_res
+    mock_ingestion.job_repository._client.table.return_value = mock_table
+
+    with patch("app.workers.jobs.crawl_jobs.JobIngestionService", return_value=mock_ingestion), \
+         patch("app.services.jobs.crawl_dispatcher.complete_target", new_callable=AsyncMock) as mock_complete, \
+         patch("app.workers.jobs.crawl_jobs._record_crawl_status", new_callable=AsyncMock) as mock_record_redis, \
+         patch("app.repositories.observability_repository.ObservabilityRepository.record_crawl_run") as mock_record_db, \
+         patch("app.workers.jobs.crawl_jobs._deactivate_after_success", return_value=(1, 0, 10, 10)):
+
+        result = await crawl_company_job(
+            ctx, source="greenhouse", slug="elastic", target_id=42
+        )
+
+        assert result["status"] == "success"
+        assert result["target_id"] == 42
+
+        # Verify exact target_id passed to DB record_crawl_run
+        mock_record_db.assert_called_once()
+        call_kwargs = mock_record_db.call_args.kwargs
+        assert call_kwargs["target_id"] == 42
+        assert call_kwargs["source"] == "greenhouse"
+        assert call_kwargs["slug"] == "elastic"
+
+        # Verify target_id passed to Redis status
+        mock_record_redis.assert_called_once()
+        assert mock_record_redis.call_args[0][2]["target_id"] == 42
+
+
+@pytest.mark.asyncio
+async def test_crawl_company_job_target_id_retained_on_anomaly():
+    """Verify target_id is preserved when crawl encounters an anomaly."""
+    ctx = {"job_id": "job-test-target-anomaly"}
+
+    mock_ingestion = MagicMock()
+    mock_ingestion.ingest_ashby_jobs = AsyncMock(
+        return_value={"discovered": 5, "inserted": 0, "updated": 5, "unchanged": 0}
+    )
+    mock_ingestion.job_repository = MagicMock()
+    mock_prev_res = MockExecuteResult(count=50)
+    mock_table = MagicMock()
+    mock_table.select.return_value.eq.return_value.eq.return_value.eq.return_value.execute.return_value = mock_prev_res
+    mock_ingestion.job_repository._client.table.return_value = mock_table
+
+    with patch("app.workers.jobs.crawl_jobs.JobIngestionService", return_value=mock_ingestion), \
+         patch("app.services.jobs.crawl_dispatcher.complete_target", new_callable=AsyncMock), \
+         patch("app.workers.jobs.crawl_jobs._record_crawl_status", new_callable=AsyncMock) as mock_record_redis, \
+         patch("app.repositories.observability_repository.ObservabilityRepository.record_crawl_run") as mock_record_db, \
+         patch("sentry_sdk.capture_message"):
+
+        result = await crawl_company_job(
+            ctx, source="ashby", slug="acme", target_id="target-uuid-99"
+        )
+
+        assert result["status"] == "anomaly"
+        assert result["target_id"] == "target-uuid-99"
+
+        mock_record_db.assert_called_once()
+        assert mock_record_db.call_args.kwargs["target_id"] == "target-uuid-99"
+        assert mock_record_redis.call_args[0][2]["target_id"] == "target-uuid-99"
+
+
+@pytest.mark.asyncio
+async def test_crawl_company_job_target_id_retained_on_failure():
+    """Verify target_id is preserved when crawl throws an exception and fails."""
+    ctx = {"job_id": "job-test-target-failure"}
+
+    mock_ingestion = MagicMock()
+    mock_ingestion.ingest_ashby_jobs = AsyncMock(side_effect=RuntimeError("Ashby API down"))
+
+    with patch("app.workers.jobs.crawl_jobs.JobIngestionService", return_value=mock_ingestion), \
+         patch("app.services.jobs.crawl_dispatcher.complete_target", new_callable=AsyncMock), \
+         patch("app.workers.jobs.crawl_jobs._record_crawl_status", new_callable=AsyncMock) as mock_record_redis, \
+         patch("app.repositories.observability_repository.ObservabilityRepository.record_crawl_run") as mock_record_db:
+
+        with pytest.raises(RuntimeError):
+            await crawl_company_job(
+                ctx, source="ashby", slug="acme", target_id=12345
+            )
+
+        mock_record_db.assert_called_once()
+        call_kwargs = mock_record_db.call_args.kwargs
+        assert call_kwargs["status"] == "failed"
+        assert call_kwargs["target_id"] == 12345
+
+        assert mock_record_redis.call_args[0][2]["status"] == "failed"
+        assert mock_record_redis.call_args[0][2]["target_id"] == 12345
+
+
+@pytest.mark.asyncio
+async def test_crawl_company_job_target_id_retained_on_cancellation():
+    """Verify target_id is preserved when crawl is cancelled."""
+    import asyncio
+    ctx = {"job_id": "job-test-target-cancellation"}
+
+    mock_ingestion = MagicMock()
+    mock_ingestion.ingest_ashby_jobs = AsyncMock(side_effect=asyncio.CancelledError())
+
+    with patch("app.workers.jobs.crawl_jobs.JobIngestionService", return_value=mock_ingestion), \
+         patch("app.workers.jobs.crawl_jobs._record_crawl_status", new_callable=AsyncMock) as mock_record_redis, \
+         patch("app.repositories.observability_repository.ObservabilityRepository.record_crawl_run") as mock_record_db:
+
+        with pytest.raises(asyncio.CancelledError):
+            await crawl_company_job(
+                ctx, source="ashby", slug="acme", target_id=9876
+            )
+
+        mock_record_db.assert_called_once()
+        call_kwargs = mock_record_db.call_args.kwargs
+        assert call_kwargs["status"] == "cancelled"
+        assert call_kwargs["target_id"] == 9876
+
+        assert mock_record_redis.call_args[0][2]["status"] == "cancelled"
+        assert mock_record_redis.call_args[0][2]["target_id"] == 9876
+
+
+
+@pytest.mark.asyncio
+async def test_crawl_company_job_non_target_preserves_none():
+    """Legitimate non-target crawl runs preserve target_id=None without inventing an ID."""
+    ctx = {"job_id": "job-test-no-target"}
+
+    mock_ingestion = MagicMock()
+    mock_ingestion.ingest_ycombinator_jobs = AsyncMock(
+        return_value={"discovered": 10, "inserted": 1, "updated": 9, "unchanged": 0}
+    )
+    mock_ingestion.job_repository = MagicMock()
+    mock_prev_res = MockExecuteResult(count=10)
+    mock_table = MagicMock()
+    mock_table.select.return_value.eq.return_value.eq.return_value.execute.return_value = mock_prev_res
+    mock_ingestion.job_repository._client.table.return_value = mock_table
+
+    with patch("app.workers.jobs.crawl_jobs.JobIngestionService", return_value=mock_ingestion), \
+         patch("app.services.jobs.crawl_dispatcher.complete_target", new_callable=AsyncMock), \
+         patch("app.workers.jobs.crawl_jobs._record_crawl_status", new_callable=AsyncMock) as mock_record_redis, \
+         patch("app.repositories.observability_repository.ObservabilityRepository.record_crawl_run") as mock_record_db, \
+         patch("app.workers.jobs.crawl_jobs._deactivate_after_success", return_value=(0, 0, 5, 5)):
+
+        result = await crawl_company_job(ctx, source="ycombinator", slug="")
+
+        assert result["status"] == "success"
+        assert result["target_id"] is None
+        mock_record_db.assert_called_once()
+        assert mock_record_db.call_args.kwargs["target_id"] is None
+        assert mock_record_redis.call_args[0][2]["target_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_claims_and_enqueues_target_id():
+    """Verify dispatch_due_targets extracts target_id and forwards to enqueue_scheduled_crawl."""
+    from app.services.jobs import crawl_dispatcher
+    from types import SimpleNamespace
+
+    monkeypatch_items = {}
+    claim_row = {
+        "id": 101,
+        "source": "greenhouse",
+        "slug": "elastic",
+        "next_run_at": "2026-10-12T12:00:00Z",
+    }
+
+    with patch.object(crawl_dispatcher, "_migration_probe", return_value=True), \
+         patch.object(crawl_dispatcher, "_worker_capacity", return_value=5), \
+         patch.object(crawl_dispatcher, "_in_flight_crawls", AsyncMock(return_value=0)), \
+         patch.object(crawl_dispatcher, "_rpc", return_value=[claim_row]), \
+         patch.object(crawl_dispatcher, "get_settings", return_value=SimpleNamespace(
+             dispatch_batch=5, crawl_lease_seconds=900, worker_soft_memory_limit_mb=1000
+         )), \
+         patch("app.workers.dispatcher.enqueue_scheduled_crawl", new_callable=AsyncMock) as mock_enqueue:
+
+        mock_enqueue.return_value = "arq-job-101"
+        enqueued = await crawl_dispatcher.dispatch_due_targets({})
+
+        assert enqueued == 1
+        mock_enqueue.assert_called_once()
+        assert mock_enqueue.call_args.kwargs["target_id"] == 101
+        assert mock_enqueue.call_args.args[0] == "greenhouse"
+        assert mock_enqueue.call_args.args[1] == "elastic"

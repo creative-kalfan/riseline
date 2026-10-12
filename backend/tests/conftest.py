@@ -45,6 +45,22 @@ def guard_live_network_and_llm(request: pytest.FixtureRequest, monkeypatch: pyte
 
 
 @pytest.fixture(autouse=True)
+def _mock_redis_pool_default(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest):
+    """Hermetic default: mock get_redis_pool so workers do not attempt connection to localhost:6379 in tests."""
+    if "live" in request.keywords:
+        return
+    from app.workers import settings
+    mock_redis = AsyncMock()
+    mock_redis.get = AsyncMock(return_value=None)
+    mock_redis.set = AsyncMock(return_value=True)
+    mock_redis.delete = AsyncMock(return_value=1)
+    mock_redis.zcard = AsyncMock(return_value=0)
+    mock_redis.ping = AsyncMock(return_value=True)
+    mock_redis.enqueue_job = AsyncMock(return_value=MagicMock(job_id="test-job-mock"))
+    monkeypatch.setattr(settings, "get_redis_pool", AsyncMock(return_value=mock_redis))
+
+
+@pytest.fixture(autouse=True)
 def _preserve_registry():
     from app.workers.registry import _REGISTRY
     backup = dict(_REGISTRY)

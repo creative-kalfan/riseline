@@ -256,7 +256,7 @@ async def test_admission_guard_claims_despite_many_queued_analysis_jobs(monkeypa
         lambda: SimpleNamespace(dispatch_batch=2, crawl_lease_seconds=900),
     )
 
-    async def _mock_enqueue(source, slug, run_id):
+    async def _mock_enqueue(source, slug, run_id, target_id=None):
         return f"job_{source}_{slug}"
 
     import app.workers.dispatcher

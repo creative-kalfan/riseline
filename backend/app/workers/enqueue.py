@@ -38,7 +38,7 @@ async def enqueue_resume_parse(resume_id: str, user_id: str, storage_path: str) 
     return job.job_id
 
 
-async def enqueue_crawl_company(source: str, slug: str) -> Optional[str]:
+async def enqueue_crawl_company(source: str, slug: str, target_id: Optional[Any] = None) -> Optional[str]:
     """Enqueue a crawl job for a company, with a simple Redis concurrency lock.
 
     Returns the ARQ job_id if enqueued, or None if a crawl for the same
@@ -55,10 +55,15 @@ async def enqueue_crawl_company(source: str, slug: str) -> Optional[str]:
         )
         return None
 
+    job_kwargs: dict[str, Any] = {}
+    if target_id is not None:
+        job_kwargs["target_id"] = target_id
+
     job = await redis.enqueue_job(
         "crawl_company_job",
         source,
         slug,
+        **job_kwargs,
     )
     if job is None:
         raise RuntimeError("Failed to enqueue crawl_company_job")

@@ -77,7 +77,7 @@ def _tick_env(monkeypatch, *, in_flight=0, pool=None, capacity=2):
     monkeypatch.setattr(crawl_dispatcher, "_rpc", claim)
     enqueued = []
 
-    async def enqueue(source, slug, run_id):
+    async def enqueue(source, slug, run_id, target_id=None):
         await asyncio.sleep(0)
         enqueued.append(slug)
         return run_id

@@ -118,6 +118,7 @@ async def enqueue_crawl_company(
     _defer_by: Optional[int] = None,
     _defer_until: Optional[Any] = None,
     _defer: Optional[int] = None,
+    target_id: Optional[Any] = None,
 ) -> Optional[str]:
     """Enqueue a job-crawling job, with a simple Redis concurrency lock.
 
@@ -154,6 +155,8 @@ async def enqueue_crawl_company(
         job_kwargs["_defer_by"] = effective_defer
     if _defer_until is not None:
         job_kwargs["_defer_until"] = _defer_until
+    if target_id is not None:
+        job_kwargs["target_id"] = target_id
     job_kwargs["_job_id"] = job_id
 
     try:
@@ -173,10 +176,15 @@ async def enqueue_crawl_company(
         raise
 
 
-async def enqueue_scheduled_crawl(source: str, slug: str, job_id: str) -> Optional[str]:
+async def enqueue_scheduled_crawl(
+    source: str, slug: str, job_id: str, target_id: Optional[Any] = None
+) -> Optional[str]:
     """Enqueue DB-scheduled crawl; ARQ job ID is its deduplication key."""
     redis = await _get_redis()
-    job = await redis.enqueue_job("crawl_company_job", source, slug, _job_id=job_id)
+    kwargs: dict[str, Any] = {"_job_id": job_id}
+    if target_id is not None:
+        kwargs["target_id"] = target_id
+    job = await redis.enqueue_job("crawl_company_job", source, slug, **kwargs)
     if job is None:
         logger.info("Scheduled crawl deduplicated source=%s slug=%s", source, slug)
         return None

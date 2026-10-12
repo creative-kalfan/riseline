@@ -318,8 +318,9 @@ async def dispatch_due_targets(ctx: dict[str, Any]) -> int:
                 continue
 
         run_id = deterministic_job_id(source, slug, str(row.get("next_run_at", "")))
+        target_id = row.get("id")
         try:
-            job_id = await enqueue_scheduled_crawl(source, slug, run_id)
+            job_id = await enqueue_scheduled_crawl(source, slug, run_id, target_id=target_id)
             if job_id:
                 enqueued += 1
             else:
